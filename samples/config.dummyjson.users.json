@@ -1,0 +1,23 @@
+{
+  "name": "dummyjson_users",
+  "source": "dummyjson",
+  "request": "curl -sS https://dummyjson.com/users",
+  "content_path": "users",
+  "notes": "Keep the public identity and list fields for each user while stripping credentials, identifiers, device data, and financial/crypto subtrees.",
+  "allow": [
+    "[].id",
+    "[].firstName",
+    "[].lastName",
+    "[].username",
+    "[].email",
+    "[].gender",
+    "[].age",
+    "[].role",
+    "[].image",
+    "[].company.name",
+    "[].company.title",
+    "[].address.city",
+    "[].address.state",
+    "[].university"
+  ]
+}

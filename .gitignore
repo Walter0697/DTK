@@ -1,0 +1,26 @@
+# Build output
+target/
+
+# Temporary workspace
+tmp/
+.tmp/
+
+# Local DTK store and generated artifacts
+.dtk-store/
+.code-review-graph/
+/dtk/
+
+# Python cache and test artifacts
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+
+# OS and editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.log
