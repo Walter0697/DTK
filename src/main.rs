@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -5,10 +6,169 @@ use std::process::{Command, ExitCode};
 
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
-    add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir,
-    filtered_payload_path, install_agent_guidance, install_config_skill, read_store_index,
-    runtime_store_dir, uninstall_agent_guidance, AgentTarget, HookRule,
+    add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir, end_session,
+    filtered_payload_path, init_usage_schema, install_agent_guidance, install_config_skill,
+    read_store_index, runtime_store_dir, start_session, token_count_for_path,
+    uninstall_agent_guidance, usage_db_path, AgentTarget, HookRule,
 };
+use rusqlite::Connection;
+use serde::Serialize;
+
+struct GainRow {
+    command: Option<String>,
+    domain: Option<String>,
+    details: Option<String>,
+    runs: i64,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    saved_pct: f64,
+}
+
+struct GainIssueRow {
+    command: String,
+    domain: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GainGroupBy {
+    Signature,
+    Command,
+    Domain,
+    Details,
+}
+
+impl GainGroupBy {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "signature" => Some(Self::Signature),
+            "command" => Some(Self::Command),
+            "domain" => Some(Self::Domain),
+            "details" => Some(Self::Details),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Signature => "signature",
+            Self::Command => "command",
+            Self::Domain => "domain",
+            Self::Details => "details",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UsageRecord {
+    created_at_unix_ms: i64,
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+}
+
+#[derive(Debug, Clone)]
+struct UsageIssueRecord {
+    created_at_unix_ms: i64,
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    issue_kind: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainSummaryJson {
+    runs: i64,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    saved_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainGroupJson {
+    command: Option<String>,
+    domain: Option<String>,
+    details: Option<String>,
+    runs: i64,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    saved_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainPeriodJson {
+    period: String,
+    runs: i64,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    saved_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainReportJson {
+    group_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ticket_id: Option<String>,
+    summary: GainSummaryJson,
+    groups: Vec<GainGroupJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issues: Option<Vec<GainIssueJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daily: Option<Vec<GainPeriodJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weekly: Option<Vec<GainPeriodJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monthly: Option<Vec<GainPeriodJson>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainIssueJson {
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    issue_kind: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+    created_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GainPeriodKind {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+struct GainOptions {
+    json_output: bool,
+    group_by: GainGroupBy,
+    limit: Option<usize>,
+    ticket_id: Option<String>,
+    issues: bool,
+    all: bool,
+    daily: bool,
+    weekly: bool,
+    monthly: bool,
+}
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -32,6 +192,14 @@ fn main() -> ExitCode {
 
     if command == "cache" {
         return run_cache_command(args.collect());
+    }
+
+    if command == "session" {
+        return run_session_command(args.collect());
+    }
+
+    if command == "gain" {
+        return run_gain_command(args.collect());
     }
 
     if command == "hook" {
@@ -156,11 +324,14 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|version|help> [--agent all|codex|claude|cursor]"
+        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
     );
+    eprintln!("Commands:");
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
     eprintln!("  dtk cache <list|show> [ref_id]");
+    eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");
+    eprintln!("  dtk gain [--limit N]");
     eprintln!("  dtk version");
     eprintln!("  dtk doctor");
     eprintln!("  dtk hook add --name NAME --config PATH --command-prefix PREFIX [--command-contains NEEDLE]...");
@@ -327,8 +498,12 @@ fn run_cache_list() -> ExitCode {
     let mut rows: Vec<Vec<String>> = Vec::new();
     for (ref_id, entry) in entries {
         let filtered_path = filtered_payload_path(&store_dir, &ref_id);
-        let original_tokens = token_count_for_path(Path::new(&entry.path));
-        let filtered_tokens = token_count_for_path(filtered_path.as_path());
+        let original_tokens = token_count_for_path(Path::new(&entry.path))
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "-".to_string());
+        let filtered_tokens = token_count_for_path(filtered_path.as_path())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "-".to_string());
         rows.push(vec![
             ref_id,
             age_from_unix_ms(entry.created_at_unix_ms),
@@ -344,6 +519,1066 @@ fn run_cache_list() -> ExitCode {
     );
 
     ExitCode::from(0)
+}
+
+fn run_gain_command(args: Vec<String>) -> ExitCode {
+    let mut iter = args.into_iter();
+    let mut options = GainOptions {
+        json_output: false,
+        group_by: GainGroupBy::Signature,
+        limit: Some(10),
+        ticket_id: None,
+        issues: false,
+        all: false,
+        daily: false,
+        weekly: false,
+        monthly: false,
+    };
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--limit" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --limit");
+                    return ExitCode::from(2);
+                };
+                match value.parse::<usize>() {
+                    Ok(parsed) if parsed > 0 => options.limit = Some(parsed),
+                    _ => {
+                        eprintln!("invalid limit: {value}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--json" => {
+                options.json_output = true;
+            }
+            "--issues" => {
+                options.issues = true;
+            }
+            "--ticket-id" | "--ticketId" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --ticket-id");
+                    return ExitCode::from(2);
+                };
+                if value.trim().is_empty() {
+                    eprintln!("invalid ticketId: {value}");
+                    return ExitCode::from(2);
+                }
+                options.ticket_id = Some(value);
+            }
+            "--group-by" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --group-by");
+                    return ExitCode::from(2);
+                };
+                match GainGroupBy::parse(&value) {
+                    Some(parsed) => options.group_by = parsed,
+                    None => {
+                        eprintln!("invalid group-by value: {value}");
+                        print_gain_usage();
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--all" => {
+                options.all = true;
+                options.daily = true;
+                options.weekly = true;
+                options.monthly = true;
+                options.limit = None;
+            }
+            "--daily" => {
+                options.daily = true;
+            }
+            "--weekly" => {
+                options.weekly = true;
+            }
+            "--monthly" => {
+                options.monthly = true;
+            }
+            "--help" | "-h" => {
+                print_gain_usage();
+                return ExitCode::from(0);
+            }
+            other => {
+                eprintln!("unknown gain argument: {other}");
+                print_gain_usage();
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    if !options.all && !options.daily && !options.weekly && !options.monthly {
+        options.limit = options.limit.or(Some(10));
+    }
+
+    let store_dir = runtime_store_dir();
+    let db_path = usage_db_path(&store_dir);
+    if !db_path.exists() {
+        println!("no usage entries");
+        return ExitCode::from(0);
+    }
+
+    let connection = match Connection::open(&db_path) {
+        Ok(connection) => connection,
+        Err(err) => {
+            eprintln!("failed to open usage db: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(err) = init_usage_schema(&connection) {
+        eprintln!("failed to initialize usage db: {err}");
+        return ExitCode::from(1);
+    }
+
+    let records = match load_usage_records(&connection) {
+        Ok(records) => records,
+        Err(err) => {
+            eprintln!("failed to read usage data: {err}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let issues = match load_usage_issues(&connection) {
+        Ok(issues) => issues,
+        Err(err) => {
+            eprintln!("failed to read usage issues: {err}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let records = if let Some(ticket_id) = options.ticket_id.as_deref() {
+        records
+            .into_iter()
+            .filter(|record| record.ticket_id == ticket_id)
+            .collect::<Vec<_>>()
+    } else {
+        records
+    };
+
+    let issues = if let Some(ticket_id) = options.ticket_id.as_deref() {
+        issues
+            .into_iter()
+            .filter(|issue| issue.ticket_id == ticket_id)
+            .collect::<Vec<_>>()
+    } else {
+        issues
+    };
+
+    if records.is_empty() {
+        println!("no usage entries");
+        return ExitCode::from(0);
+    }
+
+    let summary = summarize_usage(&records);
+    let color_enabled = supports_color();
+
+    let group_rows = group_usage_rows(&records, options.group_by);
+    let group_rows = if options.all {
+        group_rows
+    } else if let Some(limit) = options.limit {
+        group_rows.into_iter().take(limit).collect()
+    } else {
+        group_rows
+    };
+
+    if options.json_output {
+        let report = GainReportJson {
+            group_by: options.group_by.as_str().to_string(),
+            ticket_id: options.ticket_id.clone(),
+            summary: summary.clone(),
+            groups: group_rows.iter().map(group_row_to_json).collect(),
+            issues: if options.issues || !issues.is_empty() {
+                Some(issues.iter().take(5).map(issue_record_to_json).collect())
+            } else {
+                None
+            },
+            daily: if options.all || options.daily {
+                Some(period_usage_rows(&records, GainPeriodKind::Daily))
+            } else {
+                None
+            },
+            weekly: if options.all || options.weekly {
+                Some(period_usage_rows(&records, GainPeriodKind::Weekly))
+            } else {
+                None
+            },
+            monthly: if options.all || options.monthly {
+                Some(period_usage_rows(&records, GainPeriodKind::Monthly))
+            } else {
+                None
+            },
+        };
+
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(err) => {
+                eprintln!("failed to render usage json: {err}");
+                return ExitCode::from(1);
+            }
+        }
+
+        return ExitCode::from(0);
+    }
+
+    if options.issues {
+        if issues.is_empty() {
+            println!("no fallback issues");
+            return ExitCode::from(0);
+        }
+        let issue_rows = issues
+            .iter()
+            .take(5)
+            .map(issue_record_to_row)
+            .collect::<Vec<_>>();
+        print_gain_issue_report(&issue_rows, color_enabled);
+        return ExitCode::from(0);
+    }
+
+    if (options.daily || options.weekly || options.monthly) && !options.all {
+        if options.daily {
+            print_period_section(
+                "Daily Breakdown",
+                "Date",
+                &period_usage_rows(&records, GainPeriodKind::Daily),
+            );
+            println!();
+        }
+        if options.weekly {
+            print_period_section(
+                "Weekly Breakdown",
+                "Week",
+                &period_usage_rows(&records, GainPeriodKind::Weekly),
+            );
+            println!();
+        }
+        if options.monthly {
+            print_period_section(
+                "Monthly Breakdown",
+                "Month",
+                &period_usage_rows(&records, GainPeriodKind::Monthly),
+            );
+        }
+        return ExitCode::from(0);
+    }
+
+    print_gain_report(
+        &summary,
+        &group_rows,
+        options.group_by,
+        options.ticket_id.as_deref(),
+        color_enabled,
+    );
+
+    let recent_issue_rows = issues
+        .iter()
+        .take(5)
+        .map(issue_record_to_row)
+        .collect::<Vec<_>>();
+    if !recent_issue_rows.is_empty() {
+        println!();
+        print_gain_issue_report(&recent_issue_rows, color_enabled);
+    }
+
+    if options.all {
+        println!();
+        print_period_section(
+            "Daily Breakdown",
+            "Date",
+            &period_usage_rows(&records, GainPeriodKind::Daily),
+        );
+        println!();
+        print_period_section(
+            "Weekly Breakdown",
+            "Week",
+            &period_usage_rows(&records, GainPeriodKind::Weekly),
+        );
+        println!();
+        print_period_section(
+            "Monthly Breakdown",
+            "Month",
+            &period_usage_rows(&records, GainPeriodKind::Monthly),
+        );
+    }
+
+    ExitCode::from(0)
+}
+
+fn run_session_command(args: Vec<String>) -> ExitCode {
+    let mut iter = args.into_iter();
+    let Some(subcommand) = iter.next() else {
+        print_session_usage();
+        return ExitCode::from(2);
+    };
+
+    let mut ticket_id: Option<String> = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--ticket-id" | "--ticketId" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --ticket-id");
+                    return ExitCode::from(2);
+                };
+                if value.trim().is_empty() {
+                    eprintln!("invalid ticketId: {value}");
+                    return ExitCode::from(2);
+                }
+                ticket_id = Some(value);
+            }
+            "--help" | "-h" => {
+                print_session_usage();
+                return ExitCode::from(0);
+            }
+            other => {
+                eprintln!("unknown session argument: {other}");
+                print_session_usage();
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let store_dir = runtime_store_dir();
+    match subcommand.as_str() {
+        "start" => match start_session(&store_dir, ticket_id) {
+            Ok(session) => {
+                println!(
+                    "session started: ticketId={} session={}",
+                    session.ticket_id, session.id
+                );
+                ExitCode::from(0)
+            }
+            Err(err) => {
+                eprintln!("failed to start session: {err}");
+                ExitCode::from(1)
+            }
+        },
+        "end" => match end_session(&store_dir) {
+            Ok(session) => {
+                println!(
+                    "session ended: ticketId={} session={}",
+                    session.ticket_id, session.id
+                );
+                ExitCode::from(0)
+            }
+            Err(err) => {
+                eprintln!("failed to end session: {err}");
+                ExitCode::from(1)
+            }
+        },
+        "--help" | "-h" | "help" => {
+            print_session_usage();
+            ExitCode::from(0)
+        }
+        other => {
+            eprintln!("unknown session subcommand: {other}");
+            print_session_usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn print_gain_usage() {
+    eprintln!(
+        "Usage: dtk gain [--limit N] [--json] [--issues] [--ticket-id ID|--ticketId ID] [--group-by command|domain|details|signature] [--all|--daily|--weekly|--monthly]"
+    );
+    eprintln!("  dtk gain");
+    eprintln!("  dtk gain --limit 20");
+    eprintln!("  dtk gain --json");
+    eprintln!("  dtk gain --issues");
+    eprintln!("  dtk gain --ticket-id abc123");
+    eprintln!("  dtk gain --group-by domain");
+    eprintln!("  dtk gain --group-by command");
+    eprintln!("  dtk gain --group-by details");
+    eprintln!("  dtk gain --group-by signature");
+    eprintln!("  dtk gain --all");
+    eprintln!("  dtk gain --daily");
+    eprintln!("  dtk gain --weekly");
+    eprintln!("  dtk gain --monthly");
+    eprintln!(
+        "  --issues  show fallback cases where parsed output was larger than original; pair with --ticket-id to inspect a session"
+    );
+    eprintln!("Grouping values:");
+    eprintln!("  command   group by executable name, like curl or git");
+    eprintln!("  domain    group by host for curl URLs, like dummyjson.com");
+    eprintln!("  details   group by the normalized full command line");
+    eprintln!("  signature group by the full command/domain/details triple");
+    eprintln!("Filters:");
+    eprintln!("  ticketId  filter by session ticket with --ticket-id or --ticketId");
+}
+
+fn print_session_usage() {
+    eprintln!("Usage: dtk session <start|end> [--ticket-id ID|--ticketId ID]");
+    eprintln!("Session commands:");
+    eprintln!("  dtk session start");
+    eprintln!("  dtk session start --ticket-id abc123");
+    eprintln!("  dtk session start --ticketId abc123");
+    eprintln!("  dtk session end");
+    eprintln!("  Records the active ticketId on metrics while the session is open.");
+}
+
+fn print_gain_report(
+    summary: &GainSummaryJson,
+    rows: &[GainRow],
+    group_by: GainGroupBy,
+    ticket_id: Option<&str>,
+    color_enabled: bool,
+) {
+    let savings_pct = summary.saved_pct;
+    let title = if ticket_id.is_some() {
+        "DTK Token Savings (Ticket Scope)"
+    } else {
+        "DTK Token Savings (Local Scope)"
+    };
+
+    println!("{}", paint(title, "1;36", color_enabled));
+    println!("{}", paint(&"═".repeat(56), "36", color_enabled));
+    println!();
+    print_metric_line("Total runs", &summary.runs.to_string(), color_enabled);
+    print_metric_line(
+        "Input tokens",
+        &compact_number(summary.original_tokens),
+        color_enabled,
+    );
+    print_metric_line(
+        "Output tokens",
+        &compact_number(summary.filtered_tokens),
+        color_enabled,
+    );
+    print_metric_line(
+        "Tokens saved",
+        &format!(
+            "{} ({savings_pct:.1}%)",
+            compact_number(summary.token_delta)
+        ),
+        color_enabled,
+    );
+    println!(
+        "Efficiency meter: {} {}",
+        paint(
+            &savings_bar(savings_pct, 24, color_enabled),
+            "32",
+            color_enabled
+        ),
+        paint(&format!("{savings_pct:.1}%"), "1;32", color_enabled)
+    );
+    println!();
+    println!("{}", paint("By Group", "1", color_enabled));
+    print_gain_table(rows, group_by, color_enabled);
+}
+
+fn print_metric_line(label: &str, value: &str, color_enabled: bool) {
+    let _ = color_enabled;
+    println!("{:<16} {}", label, value);
+}
+
+fn print_gain_table(rows: &[GainRow], group_by: GainGroupBy, color_enabled: bool) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let row_width = rows.len().to_string().len().max(1);
+    let (label_width, label_header) = match group_by {
+        GainGroupBy::Signature => ("Command".len().max("Command".len()), "Command"),
+        GainGroupBy::Command => (
+            rows.iter()
+                .filter_map(|row| row.command.as_deref())
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or(7)
+                .max("Command".len())
+                .min(18),
+            "Command",
+        ),
+        GainGroupBy::Domain => (
+            rows.iter()
+                .filter_map(|row| row.domain.as_deref())
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or(6)
+                .max("Domain".len())
+                .min(18),
+            "Domain",
+        ),
+        GainGroupBy::Details => (
+            rows.iter()
+                .filter_map(|row| row.details.as_deref())
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or(7)
+                .max("Details".len())
+                .min(20),
+            "Details",
+        ),
+    };
+    let count_width = rows
+        .iter()
+        .map(|row| row.runs.to_string().len())
+        .max()
+        .unwrap_or(5)
+        .max("Count".len());
+    let saved_width = rows
+        .iter()
+        .map(|row| compact_number(row.token_delta).len())
+        .max()
+        .unwrap_or(5)
+        .max("Saved".len());
+    let avg_width = 6usize.max("Avg%".len());
+    let impact_width = 10usize.max("Impact".len());
+
+    let table_width = match group_by {
+        GainGroupBy::Signature => {
+            3 + 2
+                + row_width
+                + 2
+                + 7
+                + 2
+                + 6
+                + 2
+                + 7
+                + 2
+                + count_width
+                + 2
+                + saved_width
+                + 2
+                + avg_width
+                + 2
+                + impact_width
+        }
+        _ => {
+            3 + 2
+                + row_width
+                + 2
+                + label_width
+                + 2
+                + count_width
+                + 2
+                + saved_width
+                + 2
+                + avg_width
+                + 2
+                + impact_width
+        }
+    };
+
+    println!("{}", "─".repeat(table_width));
+    match group_by {
+        GainGroupBy::Signature => {
+            println!(
+                "  {}  {}  {}  {}  {}  {}  {}  {}",
+                pad_right("#", row_width),
+                pad_right("Command", 7),
+                pad_right("Domain", 6),
+                pad_right("Details", 7),
+                pad_right("Count", count_width),
+                pad_right("Saved", saved_width),
+                pad_right("Avg%", avg_width),
+                pad_right("Impact", impact_width),
+            );
+        }
+        _ => {
+            println!(
+                "  {}  {}  {}  {}  {}  {}  {}",
+                pad_right("#", row_width),
+                pad_right(label_header, label_width),
+                pad_right("Count", count_width),
+                pad_right("Saved", saved_width),
+                pad_right("Avg%", avg_width),
+                pad_right("Impact", impact_width),
+                "",
+            );
+        }
+    }
+    println!("{}", "─".repeat(table_width));
+
+    for (idx, row) in rows.iter().enumerate() {
+        let impact = savings_bar(row.saved_pct, impact_width.min(10), color_enabled);
+        let _count = pad_left(&row.runs.to_string(), count_width);
+        let count = pad_left(&row.runs.to_string(), count_width);
+        let saved = pad_left(&compact_number(row.token_delta), saved_width);
+        let avg = pad_left(&format!("{:.1}%", row.saved_pct), avg_width);
+
+        match group_by {
+            GainGroupBy::Signature => {
+                let command =
+                    pad_right(&truncate_text(row.command.as_deref().unwrap_or("-"), 18), 7);
+                let domain = pad_right(&truncate_text(row.domain.as_deref().unwrap_or("-"), 6), 6);
+                let details =
+                    pad_right(&truncate_text(row.details.as_deref().unwrap_or("-"), 7), 7);
+                println!(
+                    "  {}  {}  {}  {}  {}  {}  {}  {}",
+                    pad_left(&(idx + 1).to_string(), row_width),
+                    paint(&command, "34", color_enabled),
+                    domain,
+                    details,
+                    count,
+                    paint(&saved, "1;32", color_enabled),
+                    paint(&avg, "1;32", color_enabled),
+                    impact,
+                );
+            }
+            GainGroupBy::Command => {
+                let value = pad_right(
+                    &truncate_text(row.command.as_deref().unwrap_or("-"), label_width),
+                    label_width,
+                );
+                println!(
+                    "  {}  {}  {}  {}  {}  {}",
+                    pad_left(&(idx + 1).to_string(), row_width),
+                    paint(&value, "34", color_enabled),
+                    count,
+                    paint(&saved, "1;32", color_enabled),
+                    paint(&avg, "1;32", color_enabled),
+                    impact,
+                );
+            }
+            GainGroupBy::Domain => {
+                let value = pad_right(
+                    &truncate_text(row.domain.as_deref().unwrap_or("-"), label_width),
+                    label_width,
+                );
+                println!(
+                    "  {}  {}  {}  {}  {}  {}",
+                    pad_left(&(idx + 1).to_string(), row_width),
+                    value,
+                    count,
+                    paint(&saved, "1;32", color_enabled),
+                    paint(&avg, "1;32", color_enabled),
+                    impact,
+                );
+            }
+            GainGroupBy::Details => {
+                let value = pad_right(
+                    &truncate_text(row.details.as_deref().unwrap_or("-"), label_width),
+                    label_width,
+                );
+                println!(
+                    "  {}  {}  {}  {}  {}  {}",
+                    pad_left(&(idx + 1).to_string(), row_width),
+                    value,
+                    count,
+                    paint(&saved, "1;32", color_enabled),
+                    paint(&avg, "1;32", color_enabled),
+                    impact,
+                );
+            }
+        }
+    }
+
+    println!("{}", "─".repeat(table_width));
+}
+
+fn load_usage_records(connection: &Connection) -> io::Result<Vec<UsageRecord>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT em.created_at_unix_ms, cs.command, cs.domain, cs.details, em.ticket_id, em.original_tokens, em.filtered_tokens, em.token_delta
+             FROM exec_metrics em
+             JOIN command_signatures cs ON cs.id = em.signature_id
+             ORDER BY em.created_at_unix_ms ASC, em.ref_id ASC",
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("prepare usage query: {err}")))?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(UsageRecord {
+                created_at_unix_ms: row.get(0)?,
+                command: row.get(1)?,
+                domain: row.get(2)?,
+                details: row.get(3)?,
+                ticket_id: row.get(4)?,
+                original_tokens: row.get(5)?,
+                filtered_tokens: row.get(6)?,
+                token_delta: row.get(7)?,
+            })
+        })
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("query usage rows: {err}")))?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("read usage row: {err}"))
+        })?);
+    }
+
+    Ok(records)
+}
+
+fn load_usage_issues(connection: &Connection) -> io::Result<Vec<UsageIssueRecord>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT emi.created_at_unix_ms, cs.command, cs.domain, cs.details, emi.ticket_id, emi.issue_kind, emi.original_tokens, emi.filtered_tokens, emi.token_delta, emi.token_delta_pct
+             FROM exec_metric_issues emi
+             JOIN command_signatures cs ON cs.id = emi.signature_id
+             ORDER BY emi.created_at_unix_ms DESC, emi.ref_id DESC",
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("prepare usage issue query: {err}"))
+        })?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(UsageIssueRecord {
+                created_at_unix_ms: row.get(0)?,
+                command: row.get(1)?,
+                domain: row.get(2)?,
+                details: row.get(3)?,
+                ticket_id: row.get(4)?,
+                issue_kind: row.get(5)?,
+                original_tokens: row.get(6)?,
+                filtered_tokens: row.get(7)?,
+                token_delta: row.get(8)?,
+                token_delta_pct: row.get(9)?,
+            })
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("query usage issue rows: {err}"),
+            )
+        })?;
+
+    let mut issues = Vec::new();
+    for row in rows {
+        issues.push(row.map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("read usage issue row: {err}"))
+        })?);
+    }
+
+    Ok(issues)
+}
+
+fn summarize_usage(records: &[UsageRecord]) -> GainSummaryJson {
+    let runs = records.len() as i64;
+    let original_tokens = records.iter().map(|row| row.original_tokens).sum::<i64>();
+    let filtered_tokens = records.iter().map(|row| row.filtered_tokens).sum::<i64>();
+    let token_delta = records.iter().map(|row| row.token_delta).sum::<i64>();
+    let saved_pct = if original_tokens > 0 {
+        (token_delta as f64 / original_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    GainSummaryJson {
+        runs,
+        original_tokens,
+        filtered_tokens,
+        token_delta,
+        saved_pct,
+    }
+}
+
+fn group_usage_rows(records: &[UsageRecord], group_by: GainGroupBy) -> Vec<GainRow> {
+    let mut groups: BTreeMap<String, GainRow> = BTreeMap::new();
+
+    for record in records {
+        let (command, domain, details, key) = match group_by {
+            GainGroupBy::Signature => (
+                Some(record.command.clone()),
+                Some(record.domain.clone()).filter(|value| !value.is_empty()),
+                Some(record.details.clone()),
+                format!(
+                    "{}\u{0}{}\u{0}{}",
+                    record.command, record.domain, record.details
+                ),
+            ),
+            GainGroupBy::Command => (
+                Some(record.command.clone()),
+                None,
+                None,
+                record.command.clone(),
+            ),
+            GainGroupBy::Domain => (
+                None,
+                Some(record.domain.clone()).filter(|value| !value.is_empty()),
+                None,
+                record.domain.clone(),
+            ),
+            GainGroupBy::Details => (
+                None,
+                None,
+                Some(record.details.clone()),
+                record.details.clone(),
+            ),
+        };
+
+        let entry = groups.entry(key).or_insert_with(|| GainRow {
+            command,
+            domain,
+            details,
+            runs: 0,
+            original_tokens: 0,
+            filtered_tokens: 0,
+            token_delta: 0,
+            saved_pct: 0.0,
+        });
+
+        entry.runs += 1;
+        entry.original_tokens += record.original_tokens;
+        entry.filtered_tokens += record.filtered_tokens;
+        entry.token_delta += record.token_delta;
+    }
+
+    let mut rows: Vec<GainRow> = groups
+        .into_values()
+        .map(|mut row| {
+            row.saved_pct = if row.original_tokens > 0 {
+                (row.token_delta as f64 / row.original_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+            row
+        })
+        .collect();
+
+    rows.sort_by(|left, right| {
+        right
+            .token_delta
+            .cmp(&left.token_delta)
+            .then(right.runs.cmp(&left.runs))
+            .then(left.command.cmp(&right.command))
+            .then(left.domain.cmp(&right.domain))
+            .then(left.details.cmp(&right.details))
+    });
+
+    rows
+}
+
+fn group_row_to_json(row: &GainRow) -> GainGroupJson {
+    GainGroupJson {
+        command: row.command.clone(),
+        domain: row.domain.clone(),
+        details: row.details.clone(),
+        runs: row.runs,
+        original_tokens: row.original_tokens,
+        filtered_tokens: row.filtered_tokens,
+        token_delta: row.token_delta,
+        saved_pct: row.saved_pct,
+    }
+}
+
+fn issue_record_to_row(record: &UsageIssueRecord) -> GainIssueRow {
+    GainIssueRow {
+        command: record.command.clone(),
+        domain: record.domain.clone(),
+        original_tokens: record.original_tokens,
+        filtered_tokens: record.filtered_tokens,
+        token_delta: record.token_delta,
+        token_delta_pct: record.token_delta_pct,
+    }
+}
+
+fn issue_record_to_json(record: &UsageIssueRecord) -> GainIssueJson {
+    GainIssueJson {
+        command: record.command.clone(),
+        domain: record.domain.clone(),
+        details: record.details.clone(),
+        ticket_id: record.ticket_id.clone(),
+        issue_kind: record.issue_kind.clone(),
+        original_tokens: record.original_tokens,
+        filtered_tokens: record.filtered_tokens,
+        token_delta: record.token_delta,
+        token_delta_pct: record.token_delta_pct,
+        created_at_unix_ms: record.created_at_unix_ms,
+    }
+}
+
+fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
+    if rows.is_empty() {
+        return;
+    }
+
+    println!("{}", paint("Recent Fallbacks", "1", color_enabled));
+    println!("{}", "─".repeat(74));
+    println!(
+        "  {:<4}  {:<8}  {:<16}  {:>8}  {:>8}  {:>8}  {:>7}",
+        "#", "Command", "Domain", "Input", "Output", "Delta", "Avg%"
+    );
+    println!("{}", "─".repeat(74));
+
+    for (idx, row) in rows.iter().enumerate() {
+        let command = paint(
+            &pad_right(&truncate_text(&row.command, 8), 8),
+            "34",
+            color_enabled,
+        );
+        let domain = pad_right(&truncate_text(&row.domain, 16), 16);
+        let input = pad_left(&compact_number(row.original_tokens), 8);
+        let output = pad_left(&compact_number(row.filtered_tokens), 8);
+        let delta = pad_left(&compact_number(row.token_delta), 8);
+        let avg = paint(
+            &pad_left(&format!("{:.1}%", row.token_delta_pct), 7),
+            "1;31",
+            color_enabled,
+        );
+
+        println!(
+            "  {:<4}  {}  {}  {}  {}  {}  {}",
+            idx + 1,
+            command,
+            domain,
+            input,
+            output,
+            delta,
+            avg,
+        );
+    }
+
+    println!("{}", "─".repeat(74));
+}
+
+fn period_usage_rows(records: &[UsageRecord], kind: GainPeriodKind) -> Vec<GainPeriodJson> {
+    let mut groups: BTreeMap<String, GainPeriodJson> = BTreeMap::new();
+
+    for record in records {
+        let period = match kind {
+            GainPeriodKind::Daily => format_utc_date(record.created_at_unix_ms),
+            GainPeriodKind::Weekly => format_utc_week_range(record.created_at_unix_ms),
+            GainPeriodKind::Monthly => format_utc_month(record.created_at_unix_ms),
+        };
+
+        let entry = groups
+            .entry(period.clone())
+            .or_insert_with(|| GainPeriodJson {
+                period,
+                runs: 0,
+                original_tokens: 0,
+                filtered_tokens: 0,
+                token_delta: 0,
+                saved_pct: 0.0,
+            });
+
+        entry.runs += 1;
+        entry.original_tokens += record.original_tokens;
+        entry.filtered_tokens += record.filtered_tokens;
+        entry.token_delta += record.token_delta;
+    }
+
+    let mut rows: Vec<GainPeriodJson> = groups
+        .into_values()
+        .map(|mut row| {
+            row.saved_pct = if row.original_tokens > 0 {
+                (row.token_delta as f64 / row.original_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+            row
+        })
+        .collect();
+
+    rows.sort_by(|left, right| left.period.cmp(&right.period));
+    rows
+}
+
+fn print_period_section(title: &str, period_label: &str, rows: &[GainPeriodJson]) {
+    println!("{}", title);
+    println!("{}", "─".repeat(72));
+    println!(
+        "  {:<12}  {:>5}  {:>12}  {:>12}  {:>12}  {:>6}",
+        period_label, "Runs", "Input", "Output", "Saved", "Avg%"
+    );
+    println!("{}", "─".repeat(72));
+
+    for row in rows {
+        println!(
+            "  {:<12}  {:>5}  {:>12}  {:>12}  {:>12}  {:>6.1}%",
+            truncate_text(&row.period, 12),
+            row.runs,
+            compact_number(row.original_tokens),
+            compact_number(row.filtered_tokens),
+            compact_number(row.token_delta),
+            row.saved_pct,
+        );
+    }
+
+    println!("{}", "─".repeat(72));
+}
+
+fn format_utc_date(unix_ms: i64) -> String {
+    let days = unix_ms.div_euclid(86_400_000);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn format_utc_month(unix_ms: i64) -> String {
+    let days = unix_ms.div_euclid(86_400_000);
+    let (year, month, _) = civil_from_days(days);
+    format!("{year:04}-{month:02}")
+}
+
+fn format_utc_week_range(unix_ms: i64) -> String {
+    let days = unix_ms.div_euclid(86_400_000);
+    let weekday = (days + 4).rem_euclid(7);
+    let start_days = days - weekday;
+    let end_days = start_days + 6;
+    let (start_year, start_month, start_day) = civil_from_days(start_days);
+    let (end_year, end_month, end_day) = civil_from_days(end_days);
+    format!(
+        "{start_year:04}-{start_month:02}-{start_day:02}..{end_year:04}-{end_month:02}-{end_day:02}"
+    )
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
+}
+
+fn savings_bar(percent: f64, width: usize, color_enabled: bool) -> String {
+    let filled = ((percent / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width.saturating_sub(filled);
+    let filled_part = paint(&"█".repeat(filled), "32", color_enabled);
+    let empty_part = "░".repeat(empty);
+    format!("{filled_part}{empty_part}")
+}
+
+fn compact_number(value: i64) -> String {
+    let abs = value.abs() as f64;
+    if abs >= 1_000_000.0 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if abs >= 1_000.0 {
+        format!("{:.1}K", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    chars[..keep].iter().collect::<String>() + "…"
+}
+
+fn pad_right(value: &str, width: usize) -> String {
+    format!("{value:<width$}")
+}
+
+fn pad_left(value: &str, width: usize) -> String {
+    format!("{value:>width$}")
+}
+
+fn supports_color() -> bool {
+    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+fn paint(text: &str, code: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
 }
 
 fn print_cache_table(headers: &[&str], rows: &[Vec<String>]) {
@@ -407,47 +1642,6 @@ fn age_from_unix_ms(created_at_unix_ms: u128) -> String {
     } else {
         format!("{}h", diff_ms / 3_600_000)
     }
-}
-
-fn token_count_for_path(path: &Path) -> String {
-    let Ok(content) = fs::read_to_string(path) else {
-        return "-".to_string();
-    };
-
-    token_count_for_content(&content).to_string()
-}
-
-fn token_count_for_content(content: &str) -> usize {
-    let normalized = serde_json::from_str::<serde_json::Value>(content)
-        .ok()
-        .and_then(|value| serde_json::to_string(&value).ok())
-        .unwrap_or_else(|| content.to_string());
-
-    let mut count = 0usize;
-    let mut in_word = false;
-
-    for ch in normalized.chars() {
-        if ch.is_whitespace() {
-            if in_word {
-                in_word = false;
-            }
-            continue;
-        }
-
-        if ch.is_alphanumeric() || ch == '_' {
-            if !in_word {
-                count += 1;
-                in_word = true;
-            }
-        } else {
-            if in_word {
-                in_word = false;
-            }
-            count += 1;
-        }
-    }
-
-    count
 }
 
 fn token_delta_for_tokens(original_tokens: &str, filtered_tokens: &str) -> String {
@@ -1026,15 +2220,56 @@ fn resolve_dtk_retrieve_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn usage_mentions_install_and_uninstall() {
         let usage =
-            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|version|help> [--agent all|codex|claude|cursor]";
+            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
         assert!(usage.contains("install"));
         assert!(usage.contains("uninstall"));
         assert!(usage.contains("exec"));
         assert!(usage.contains("retrieve"));
         assert!(usage.contains("cache"));
+        assert!(usage.contains("session"));
+        assert!(usage.contains("gain"));
         assert!(usage.contains("version"));
+    }
+
+    #[test]
+    fn groups_usage_by_domain() {
+        let records = vec![
+            UsageRecord {
+                created_at_unix_ms: 1_715_520_000_000,
+                command: "curl".to_string(),
+                domain: "dummyjson.com".to_string(),
+                details: "curl -sS https://dummyjson.com/users".to_string(),
+                ticket_id: "ticket-1".to_string(),
+                original_tokens: 100,
+                filtered_tokens: 25,
+                token_delta: 75,
+            },
+            UsageRecord {
+                created_at_unix_ms: 1_715_520_100_000,
+                command: "git".to_string(),
+                domain: String::new(),
+                details: "git status".to_string(),
+                ticket_id: String::new(),
+                original_tokens: 80,
+                filtered_tokens: 20,
+                token_delta: 60,
+            },
+        ];
+
+        let grouped = group_usage_rows(&records, GainGroupBy::Domain);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].domain.as_deref(), Some("dummyjson.com"));
+        assert_eq!(grouped[0].runs, 1);
+    }
+
+    #[test]
+    fn formats_utc_day_and_month() {
+        assert_eq!(format_utc_date(0), "1970-01-01");
+        assert_eq!(format_utc_month(0), "1970-01");
     }
 }

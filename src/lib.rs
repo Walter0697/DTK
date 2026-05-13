@@ -1,3 +1,4 @@
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -15,6 +16,7 @@ const DTK_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct FilterConfig {
     #[serde(default)]
@@ -57,6 +59,40 @@ pub struct StoreIndexEntry {
     pub retention_days: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_unix_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandSignatureInput {
+    pub command: String,
+    pub domain: String,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecMetricsInput {
+    pub ref_id: String,
+    pub created_at_unix_ms: u128,
+    pub signature: CommandSignatureInput,
+    pub original_tokens: usize,
+    pub filtered_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecMetricIssueInput {
+    pub ref_id: String,
+    pub created_at_unix_ms: u128,
+    pub signature: CommandSignatureInput,
+    pub original_tokens: usize,
+    pub filtered_tokens: usize,
+    pub issue_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub id: i64,
+    pub ticket_id: String,
+    pub started_at_unix_ms: i64,
+    pub ended_at_unix_ms: Option<i64>,
 }
 
 pub fn is_json_payload(text: &str) -> bool {
@@ -631,6 +667,616 @@ pub fn filtered_payload_path(store_dir: impl AsRef<Path>, ref_id: &str) -> PathB
         .join(format!("{ref_id}.json"))
 }
 
+pub fn usage_db_path(store_dir: impl AsRef<Path>) -> PathBuf {
+    store_dir.as_ref().join("usage.sqlite3")
+}
+
+pub fn summarize_command_signature(command_args: &[String]) -> Option<CommandSignatureInput> {
+    let command = command_args.first()?.to_string();
+    let details = format_command_details(command_args);
+    let domain = if command == "curl" {
+        extract_curl_domain(command_args).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Some(CommandSignatureInput {
+        command,
+        domain,
+        details,
+    })
+}
+
+fn format_command_details(command_args: &[String]) -> String {
+    command_args
+        .iter()
+        .map(|arg| shell_quote_argument(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote_argument(arg: &str) -> String {
+    if arg.is_empty()
+        || arg.chars().any(|ch| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '\'' | '"'
+                        | '\\'
+                        | '$'
+                        | '`'
+                        | '!'
+                        | '('
+                        | ')'
+                        | '{'
+                        | '}'
+                        | '['
+                        | ']'
+                        | ';'
+                        | '&'
+                        | '|'
+                        | '<'
+                        | '>'
+                        | '*'
+                        | '?'
+                        | '~'
+                )
+        })
+    {
+        let escaped = arg.replace('\'', r#"'"'"'"#);
+        format!("'{escaped}'")
+    } else {
+        arg.to_string()
+    }
+}
+
+pub fn token_count_for_content(content: &str) -> usize {
+    let normalized = serde_json::from_str::<Value>(content)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| content.to_string());
+
+    let mut count = 0usize;
+    let mut in_word = false;
+
+    for ch in normalized.chars() {
+        if ch.is_whitespace() {
+            if in_word {
+                in_word = false;
+            }
+            continue;
+        }
+
+        if ch.is_alphanumeric() || ch == '_' {
+            if !in_word {
+                count += 1;
+                in_word = true;
+            }
+        } else {
+            if in_word {
+                in_word = false;
+            }
+            count += 1;
+        }
+    }
+
+    count
+}
+
+pub fn token_count_for_path(path: impl AsRef<Path>) -> io::Result<usize> {
+    let content = fs::read_to_string(path)?;
+    Ok(token_count_for_content(&content))
+}
+
+pub fn record_exec_metrics(
+    store_dir: impl AsRef<Path>,
+    metrics: &ExecMetricsInput,
+) -> io::Result<()> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+    let db_path = usage_db_path(store_dir);
+    let mut connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+    let active_session = active_session(&connection)?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start usage tx: {err}")))?;
+    let command = metrics.signature.command.as_str();
+    let domain = metrics.signature.domain.as_str();
+    let details = metrics.signature.details.as_str();
+
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO command_signatures (command, domain, details) VALUES (?1, ?2, ?3)",
+            params![command, domain, details],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert signature: {err}")))?;
+
+    let signature_id: i64 = transaction
+        .query_row(
+            "SELECT id FROM command_signatures WHERE command = ?1 AND domain = ?2 AND details = ?3",
+            params![command, domain, details],
+            |row| row.get(0),
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("resolve signature id: {err}"))
+        })?;
+
+    let created_at_unix_ms = i64::try_from(metrics.created_at_unix_ms).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+    let original_tokens = i64::try_from(metrics.original_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let filtered_tokens = i64::try_from(metrics.filtered_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "filtered_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let token_delta = original_tokens - filtered_tokens;
+    let token_delta_pct = if original_tokens > 0 {
+        (token_delta as f64 / original_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+    let session_id = active_session.as_ref().map(|session| session.id);
+    let ticket_id = active_session
+        .as_ref()
+        .map(|session| session.ticket_id.as_str())
+        .unwrap_or("");
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                metrics.ref_id.as_str(),
+                created_at_unix_ms,
+                signature_id,
+                session_id,
+                ticket_id,
+                original_tokens,
+                filtered_tokens,
+                token_delta,
+                token_delta_pct,
+            ],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert exec metrics: {err}")))?;
+
+    transaction
+        .commit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("commit usage tx: {err}")))?;
+
+    Ok(())
+}
+
+pub fn record_exec_metric_issue(
+    store_dir: impl AsRef<Path>,
+    issue: &ExecMetricIssueInput,
+) -> io::Result<()> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+    let db_path = usage_db_path(store_dir);
+    let mut connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+    let active_session = active_session(&connection)?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start usage tx: {err}")))?;
+    let command = issue.signature.command.as_str();
+    let domain = issue.signature.domain.as_str();
+    let details = issue.signature.details.as_str();
+
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO command_signatures (command, domain, details) VALUES (?1, ?2, ?3)",
+            params![command, domain, details],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert signature: {err}")))?;
+
+    let signature_id: i64 = transaction
+        .query_row(
+            "SELECT id FROM command_signatures WHERE command = ?1 AND domain = ?2 AND details = ?3",
+            params![command, domain, details],
+            |row| row.get(0),
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("resolve signature id: {err}"))
+        })?;
+
+    let created_at_unix_ms = i64::try_from(issue.created_at_unix_ms).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+    let original_tokens = i64::try_from(issue.original_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let filtered_tokens = i64::try_from(issue.filtered_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "filtered_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let token_delta = original_tokens - filtered_tokens;
+    let token_delta_pct = if original_tokens > 0 {
+        (token_delta as f64 / original_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+    let session_id = active_session.as_ref().map(|session| session.id);
+    let ticket_id = active_session
+        .as_ref()
+        .map(|session| session.ticket_id.as_str())
+        .unwrap_or("");
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO exec_metric_issues (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, issue_kind, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                issue.ref_id.as_str(),
+                created_at_unix_ms,
+                signature_id,
+                session_id,
+                ticket_id,
+                issue.issue_kind.as_str(),
+                original_tokens,
+                filtered_tokens,
+                token_delta,
+                token_delta_pct,
+            ],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert exec metric issue: {err}")))?;
+
+    transaction
+        .commit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("commit usage tx: {err}")))?;
+
+    Ok(())
+}
+
+pub fn start_session(
+    store_dir: impl AsRef<Path>,
+    ticket_id: Option<String>,
+) -> io::Result<SessionRecord> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+    let db_path = usage_db_path(store_dir);
+    let connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+
+    if let Some(active) = active_session(&connection)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("session already active for ticketId {}", active.ticket_id),
+        ));
+    }
+
+    let ticket_id = match ticket_id {
+        Some(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ticketId cannot be empty",
+                ));
+            }
+            value.to_string()
+        }
+        None => generate_session_ticket_id(),
+    };
+
+    let started_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "started_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    connection
+        .execute(
+            "INSERT INTO sessions (ticket_id, started_at_unix_ms) VALUES (?1, ?2)",
+            params![ticket_id.as_str(), started_at_unix_ms],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start session: {err}")))?;
+
+    let id = connection.last_insert_rowid();
+    Ok(SessionRecord {
+        id,
+        ticket_id,
+        started_at_unix_ms,
+        ended_at_unix_ms: None,
+    })
+}
+
+pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
+    let store_dir = store_dir.as_ref();
+    let db_path = usage_db_path(store_dir);
+    let connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+
+    let Some(active) = active_session(&connection)? else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no active session"));
+    };
+
+    let ended_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ended_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    connection
+        .execute(
+            "UPDATE sessions SET ended_at_unix_ms = ?1 WHERE id = ?2",
+            params![ended_at_unix_ms, active.id],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("end session: {err}")))?;
+
+    Ok(SessionRecord {
+        ended_at_unix_ms: Some(ended_at_unix_ms),
+        ..active
+    })
+}
+
+pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS command_signatures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL,
+                UNIQUE(command, domain, details)
+            );
+
+            CREATE TABLE IF NOT EXISTS exec_metrics (
+                ref_id TEXT PRIMARY KEY,
+                created_at_unix_ms INTEGER NOT NULL,
+                signature_id INTEGER NOT NULL,
+                session_id INTEGER,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                original_tokens INTEGER NOT NULL,
+                filtered_tokens INTEGER NOT NULL,
+                token_delta INTEGER NOT NULL,
+                token_delta_pct REAL NOT NULL,
+                FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS exec_metric_issues (
+                ref_id TEXT PRIMARY KEY,
+                created_at_unix_ms INTEGER NOT NULL,
+                signature_id INTEGER NOT NULL,
+                session_id INTEGER,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                issue_kind TEXT NOT NULL,
+                original_tokens INTEGER NOT NULL,
+                filtered_tokens INTEGER NOT NULL,
+                token_delta INTEGER NOT NULL,
+                token_delta_pct REAL NOT NULL,
+                FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                started_at_unix_ms INTEGER NOT NULL,
+                ended_at_unix_ms INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_exec_metrics_created_at_unix_ms
+                ON exec_metrics(created_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_exec_metrics_signature_id
+                ON exec_metrics(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_created_at_unix_ms
+                ON exec_metric_issues(created_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_signature_id
+                ON exec_metric_issues(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_active
+                ON sessions(ended_at_unix_ms, started_at_unix_ms);
+            "#,
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("create usage schema: {err}"))
+        })?;
+
+    ensure_usage_column(connection, "exec_metrics", "session_id", "INTEGER")?;
+    ensure_usage_column(
+        connection,
+        "exec_metrics",
+        "ticket_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_usage_column(connection, "exec_metric_issues", "session_id", "INTEGER")?;
+    ensure_usage_column(
+        connection,
+        "exec_metric_issues",
+        "ticket_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_usage_column(
+        connection,
+        "exec_metric_issues",
+        "issue_kind",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_exec_metrics_ticket_id ON exec_metrics(ticket_id)",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
+        })?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_ticket_id ON exec_metric_issues(ticket_id)",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
+        })?;
+
+    Ok(())
+}
+
+fn ensure_usage_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    column_definition: &str,
+) -> io::Result<()> {
+    if usage_column_exists(connection, table, column)? {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
+    connection.execute(&statement, []).map_err(|err| {
+        io::Error::new(io::ErrorKind::Other, format!("migrate usage schema: {err}"))
+    })?;
+    Ok(())
+}
+
+fn usage_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("inspect usage schema: {err}"))
+        })?;
+    let mut rows = statement.query([]).map_err(|err| {
+        io::Error::new(io::ErrorKind::Other, format!("query usage schema: {err}"))
+    })?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema: {err}")))?
+    {
+        let name: String = row.get(1).map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("read usage column: {err}"))
+        })?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, ticket_id, started_at_unix_ms, ended_at_unix_ms
+             FROM sessions
+             WHERE ended_at_unix_ms IS NULL
+             ORDER BY started_at_unix_ms DESC, id DESC
+             LIMIT 1",
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("prepare session query: {err}"),
+            )
+        })?;
+
+    let result = statement.query_row([], |row| {
+        Ok(SessionRecord {
+            id: row.get(0)?,
+            ticket_id: row.get(1)?,
+            started_at_unix_ms: row.get(2)?,
+            ended_at_unix_ms: row.get(3)?,
+        })
+    });
+
+    match result {
+        Ok(session) => Ok(Some(session)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("read session: {err}"),
+        )),
+    }
+}
+
+fn generate_session_ticket_id() -> String {
+    let sequence = SESSION_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("dtk-sess-{:x}-{sequence}", now_unix_ms())
+}
+
+fn extract_curl_domain(command_args: &[String]) -> Option<String> {
+    let mut iter = command_args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--url" {
+            if let Some(url) = iter.next() {
+                if let Some(domain) = domain_from_url(url) {
+                    return Some(domain);
+                }
+            }
+            continue;
+        }
+
+        if let Some(domain) = domain_from_url(arg) {
+            return Some(domain);
+        }
+    }
+
+    None
+}
+
+fn domain_from_url(value: &str) -> Option<String> {
+    let remainder = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+
+    let host_port = remainder.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host_port.rsplit('@').next().unwrap_or(host_port);
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
 pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value> {
     let allow_patterns: Vec<PathPattern> =
         config.allow.iter().map(|s| PathPattern::parse(s)).collect();
@@ -710,6 +1356,7 @@ enum PathSegment {
     Key(String),
     AnyIndex,
     Index(usize),
+    AnyDescendant,
 }
 
 #[derive(Debug, Clone)]
@@ -724,6 +1371,11 @@ impl PathPattern {
         for part in pattern.split('.') {
             if part.is_empty() {
                 continue;
+            }
+
+            if part == "**" {
+                segments.push(PathSegment::AnyDescendant);
+                break;
             }
 
             let mut remainder = part;
@@ -771,20 +1423,44 @@ impl PathPattern {
     }
 
     fn matches_exact(&self, path: &[PathSegment]) -> bool {
-        self.segments.len() == path.len()
-            && self
-                .segments
-                .iter()
-                .zip(path.iter())
-                .all(|(pattern, actual)| segment_matches(pattern, actual))
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                self.segments.len() == path.len()
+                    && self
+                        .segments
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+        }
     }
 
     fn path_is_prefix(&self, path: &[PathSegment]) -> bool {
-        path.len() <= self.segments.len()
-            && path
-                .iter()
-                .zip(self.segments.iter())
-                .all(|(actual, pattern)| segment_matches(pattern, actual))
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                path.len() <= self.segments.len()
+                    && path
+                        .iter()
+                        .zip(self.segments.iter())
+                        .all(|(actual, pattern)| segment_matches(pattern, actual))
+            }
+        }
     }
 }
 
@@ -792,6 +1468,7 @@ fn segment_matches(pattern: &PathSegment, actual: &PathSegment) -> bool {
     match (pattern, actual) {
         (PathSegment::AnyIndex, PathSegment::AnyIndex) => true,
         (PathSegment::AnyIndex, PathSegment::Index(_)) => true,
+        (PathSegment::AnyDescendant, _) => true,
         (PathSegment::Index(left), PathSegment::Index(right)) => left == right,
         (PathSegment::Key(left), PathSegment::Key(right)) => left == right,
         _ => false,
@@ -890,6 +1567,12 @@ fn render_field_path(path: &[PathSegment]) -> String {
                 out.push('[');
                 out.push_str(&index.to_string());
                 out.push(']');
+            }
+            PathSegment::AnyDescendant => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str("**");
             }
         }
     }
@@ -1568,11 +2251,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        cleanup_expired_payloads, collect_field_paths, default_store_dir, filter_json_payload,
-        filter_json_payload_with_metadata, is_json_payload, parse_json_payload, platform_data_dir,
-        preview_expired_payloads, recover_original_payload, retrieve_json_payload,
-        retrieve_original_payload, runtime_store_dir, stable_ref_id, store_original_payload,
-        store_original_payload_with_retention, windows_data_dir, xdg_data_dir, FilterConfig,
+        cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
+        filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
+        parse_json_payload, platform_data_dir, preview_expired_payloads, record_exec_metrics,
+        recover_original_payload, retrieve_json_payload, retrieve_original_payload,
+        runtime_store_dir, stable_ref_id, start_session, store_original_payload,
+        store_original_payload_with_retention, summarize_command_signature, usage_db_path,
+        windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -1882,11 +2567,193 @@ mod tests {
     }
 
     #[test]
+    fn filters_wildcard_subtree_for_dynamic_object_keys() {
+        let value = parse_json_payload(
+            r#"{"connections":{"Alpha":{"main":[[{"node":"A"}]]},"Beta":{"ai_tool":[[{"node":"B"}]]}},"name":"wf"}"#,
+        )
+        .expect("expected structured json");
+
+        let config = FilterConfig {
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec!["connections.**".to_string()],
+        };
+
+        let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
+
+        assert_eq!(
+            filtered,
+            serde_json::json!({
+                "connections": {
+                    "Alpha": {"main": [[{"node": "A"}]]},
+                    "Beta": {"ai_tool": [[{"node": "B"}]]}
+                }
+            })
+        );
+    }
+
+    #[test]
     fn stable_ref_id_is_deterministic() {
         let left = stable_ref_id(r#"{"a":1,"b":2}"#).expect("expected ref id");
         let right = stable_ref_id(r#"{"a":1,"b":2}"#).expect("expected ref id");
         assert_eq!(left, right);
         assert!(left.starts_with("dtk_"));
+    }
+
+    #[test]
+    fn summarizes_curl_command_with_domain() {
+        let args = vec![
+            "curl".to_string(),
+            "-sS".to_string(),
+            "https://dummyjson.com/users".to_string(),
+        ];
+
+        let signature = summarize_command_signature(&args).expect("expected signature");
+
+        assert_eq!(signature.command, "curl");
+        assert_eq!(signature.domain, "dummyjson.com");
+        assert_eq!(signature.details, "curl -sS https://dummyjson.com/users");
+    }
+
+    #[test]
+    fn summarizes_non_network_command_without_domain() {
+        let args = vec!["git".to_string(), "status".to_string()];
+
+        let signature = summarize_command_signature(&args).expect("expected signature");
+
+        assert_eq!(signature.command, "git");
+        assert_eq!(signature.domain, "");
+        assert_eq!(signature.details, "git status");
+    }
+
+    #[test]
+    fn records_exec_metrics_with_deduplicated_signatures() {
+        let store_dir = temp_store_dir("unit-test-usage");
+        let first = ExecMetricsInput {
+            ref_id: "dtk_abc_1".to_string(),
+            created_at_unix_ms: 1_715_520_000_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 120,
+            filtered_tokens: 30,
+        };
+        let second = ExecMetricsInput {
+            ref_id: "dtk_abc_2".to_string(),
+            created_at_unix_ms: 1_715_520_100_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 220,
+            filtered_tokens: 40,
+        };
+
+        record_exec_metrics(&store_dir, &first).expect("expected usage write");
+        record_exec_metrics(&store_dir, &second).expect("expected usage write");
+
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
+        let signature_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM command_signatures", [], |row| {
+                row.get(0)
+            })
+            .expect("expected signature count");
+        let metric_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM exec_metrics", [], |row| row.get(0))
+            .expect("expected metric count");
+        let domain: String = connection
+            .query_row("SELECT domain FROM command_signatures LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("expected domain");
+
+        assert_eq!(signature_count, 1);
+        assert_eq!(metric_count, 2);
+        assert_eq!(domain, "dummyjson.com");
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn start_and_end_session_round_trip() {
+        let store_dir = temp_store_dir("unit-test-usage-session");
+
+        let started = start_session(&store_dir, None).expect("expected session start");
+        assert!(started.ticket_id.starts_with("dtk-sess-"));
+        assert!(started.ended_at_unix_ms.is_none());
+
+        let ended = end_session(&store_dir).expect("expected session end");
+        assert_eq!(ended.id, started.id);
+        assert_eq!(ended.ticket_id, started.ticket_id);
+        assert!(ended.ended_at_unix_ms.is_some());
+
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
+        let session_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .expect("expected session count");
+        let active_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE ended_at_unix_ms IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("expected active session count");
+
+        assert_eq!(session_count, 1);
+        assert_eq!(active_count, 0);
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn records_exec_metrics_with_active_ticket_id() {
+        let store_dir = temp_store_dir("unit-test-usage-ticket");
+        let session = start_session(&store_dir, Some("ticket-123".to_string())).expect("start");
+        assert_eq!(session.ticket_id, "ticket-123");
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_abc_3".to_string(),
+            created_at_unix_ms: 1_715_520_200_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+
+        record_exec_metrics(&store_dir, &metrics).expect("expected usage write");
+
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
+        let ticket_id: String = connection
+            .query_row(
+                "SELECT ticket_id FROM exec_metrics WHERE ref_id = ?1",
+                ["dtk_abc_3"],
+                |row| row.get(0),
+            )
+            .expect("expected ticket id");
+        let session_id: i64 = connection
+            .query_row(
+                "SELECT session_id FROM exec_metrics WHERE ref_id = ?1",
+                ["dtk_abc_3"],
+                |row| row.get(0),
+            )
+            .expect("expected session id");
+
+        assert_eq!(ticket_id, "ticket-123");
+        assert_eq!(session_id, session.id);
+        let _ = std::fs::remove_dir_all(store_dir);
     }
 
     #[test]

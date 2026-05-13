@@ -3,7 +3,7 @@
   "source": "dummyjson",
   "request": "curl -sS https://dummyjson.com/users",
   "content_path": "users",
-  "notes": "Keep the public identity and list fields for each user while stripping credentials, identifiers, device data, and financial/crypto subtrees.",
+  "notes": "Keep the user identity and profile fields that are commonly needed, while stripping secrets, device data, and financial/crypto subtrees.",
   "allow": [
     "[].id",
     "[].firstName",

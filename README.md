@@ -11,8 +11,11 @@ It is inspired by RTK, but it solves a different problem: structured payloads, r
 
 ```bash
 ./install.sh
+./install-dev.sh
 dtk install
 ```
+
+Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
 
 After that, run a command through DTK:
 
@@ -104,12 +107,20 @@ flowchart TD
   C -- yes --> F[Run through dtk exec]
   F --> G[Capture raw payload locally]
   G --> H[Store original in DTK cache]
-  H --> I[Emit filtered JSON with _dtk metadata]
-  I --> J[Agent reads smaller surface]
-  J --> K[Use dtk retrieve for more fields later]
+  H --> I{Filtered output smaller?}
+  I -- yes --> J[Emit filtered JSON with _dtk metadata]
+  I -- no --> K[Record fallback issue and emit original payload]
+  J --> L[Agent reads smaller surface]
+  K --> L
+  L --> M[Use dtk retrieve for more fields later]
 ```
 
-DTK works as a structured routing layer, not a hard replacement for RTK. It looks for a matching config or schema first. If it finds one, DTK filters the payload, stores the original locally, and gives the agent a smaller surface plus a `ref_id` for later recovery. If it does not find a match, DTK gets out of the way and returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
+DTK works as a structured routing layer, not a hard replacement for RTK.
+
+- It looks for a matching config or schema first.
+- If it finds one, DTK filters the payload, stores the original locally, and gives the agent a smaller surface plus a `ref_id` for later recovery.
+- If the filtered output would be larger than the original, DTK records that as a fallback issue and returns the original payload instead.
+- If it does not find a match, DTK returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
 
 ## How to Add Configuration
 
@@ -236,11 +247,49 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk retrieve`
 - `dtk cache list`
 - `dtk cache show <ref_id>`
+- `dtk gain`
+- `dtk session`
 - `dtk doctor`
 - `dtk install`
 - `dtk uninstall`
 - `dtk hook add`
 - `dtk version`
+
+### Gain
+
+`dtk gain` examples:
+
+```bash
+dtk gain
+dtk gain --json
+dtk gain --ticket-id ticket-123
+dtk gain --group-by domain
+dtk gain --group-by command
+dtk gain --group-by details
+dtk gain --group-by signature
+dtk gain --all
+dtk gain --daily
+dtk gain --weekly
+dtk gain --monthly
+```
+
+Grouping modes:
+
+- `command` groups by executable name, like `curl` or `git`
+- `domain` groups `curl` usage by host, like `dummyjson.com`
+- `details` groups by the normalized full command line
+- `signature` groups by the full command, domain, and details triple
+- `ticket-id` filters the report to one session ticket
+
+### Session
+
+```bash
+dtk session start
+dtk session start --ticket-id ticket-123
+dtk session end
+```
+
+While a session is active, DTK writes the session ticket into each metrics row. That lets you scope later reports with `dtk gain --ticket-id ticket-123`.
 
 ## Development
 
@@ -254,13 +303,11 @@ Branch protection and PR-only merges are configured on GitHub, not in the repo i
 
 ## Roadmap
 
-1. Add `dtk gain` for usage and cache insights.
-2. Expand DTK beyond the current `curl` / JSON-focused workflow.
-3. Add PII-aware filtering.
-4. Improve TUI and GUI management.
-5. Add more release and distribution methods.
+1. Expand DTK beyond the current `curl` / JSON-focused workflow.
+2. Add PII-aware filtering.
+3. Improve TUI and GUI management.
+4. Add more release and distribution methods.
 
 ## License
 
 MIT
-
