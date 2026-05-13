@@ -107,12 +107,20 @@ flowchart TD
   C -- yes --> F[Run through dtk exec]
   F --> G[Capture raw payload locally]
   G --> H[Store original in DTK cache]
-  H --> I[Emit filtered JSON with _dtk metadata]
-  I --> J[Agent reads smaller surface]
-  J --> K[Use dtk retrieve for more fields later]
+  H --> I{Filtered output smaller?}
+  I -- yes --> J[Emit filtered JSON with _dtk metadata]
+  I -- no --> K[Record fallback issue and emit original payload]
+  J --> L[Agent reads smaller surface]
+  K --> L
+  L --> M[Use dtk retrieve for more fields later]
 ```
 
-DTK works as a structured routing layer, not a hard replacement for RTK. It looks for a matching config or schema first. If it finds one, DTK filters the payload, stores the original locally, and gives the agent a smaller surface plus a `ref_id` for later recovery. If it does not find a match, DTK gets out of the way and returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
+DTK works as a structured routing layer, not a hard replacement for RTK.
+
+- It looks for a matching config or schema first.
+- If it finds one, DTK filters the payload, stores the original locally, and gives the agent a smaller surface plus a `ref_id` for later recovery.
+- If the filtered output would be larger than the original, DTK records that as a fallback issue and returns the original payload instead.
+- If it does not find a match, DTK returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
 
 ## How to Add Configuration
 
