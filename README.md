@@ -303,11 +303,10 @@ Branch protection and PR-only merges are configured on GitHub, not in the repo i
 
 ## Roadmap
 
-1. Add `dtk gain` for usage and cache insights.
-2. Expand DTK beyond the current `curl` / JSON-focused workflow.
-3. Add PII-aware filtering.
-4. Improve TUI and GUI management.
-5. Add more release and distribution methods.
+1. Expand DTK beyond the current `curl` / JSON-focused workflow.
+2. Add PII-aware filtering.
+3. Improve TUI and GUI management.
+4. Add more release and distribution methods.
 
 ## License
 
