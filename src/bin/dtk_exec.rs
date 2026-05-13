@@ -127,9 +127,14 @@ fn main() -> ExitCode {
         let signature_args = normalize_command_args_for_metrics(&command_args);
         if let Some(signature) = summarize_command_signature(&signature_args) {
             let original_tokens = token_count_for_content(&stdout_text);
-            let filtered_tokens = token_count_for_content(&filtered_text);
+            let filtered_tokens_raw = token_count_for_content(&filtered_text);
             let use_original_output =
-                should_return_original_output(original_tokens, filtered_tokens);
+                should_return_original_output(original_tokens, filtered_tokens_raw);
+            let emitted_filtered_tokens = if use_original_output {
+                original_tokens
+            } else {
+                filtered_tokens_raw
+            };
             let created_at_unix_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis())
@@ -139,7 +144,7 @@ fn main() -> ExitCode {
                 created_at_unix_ms,
                 signature,
                 original_tokens,
-                filtered_tokens,
+                filtered_tokens: emitted_filtered_tokens,
             };
 
             if let Err(err) = record_exec_metrics(&store_dir, &metrics) {
@@ -152,7 +157,7 @@ fn main() -> ExitCode {
                     created_at_unix_ms,
                     signature: metrics.signature.clone(),
                     original_tokens,
-                    filtered_tokens,
+                    filtered_tokens: filtered_tokens_raw,
                     issue_kind: "filtered_larger_than_original".to_string(),
                 };
 

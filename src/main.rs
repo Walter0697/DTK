@@ -28,9 +28,6 @@ struct GainRow {
 struct GainIssueRow {
     command: String,
     domain: String,
-    details: String,
-    ticket_id: String,
-    issue_kind: String,
     original_tokens: i64,
     filtered_tokens: i64,
     token_delta: i64,
@@ -1360,9 +1357,6 @@ fn issue_record_to_row(record: &UsageIssueRecord) -> GainIssueRow {
     GainIssueRow {
         command: record.command.clone(),
         domain: record.domain.clone(),
-        details: record.details.clone(),
-        ticket_id: record.ticket_id.clone(),
-        issue_kind: record.issue_kind.clone(),
         original_tokens: record.original_tokens,
         filtered_tokens: record.filtered_tokens,
         token_delta: record.token_delta,
@@ -1391,12 +1385,12 @@ fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
     }
 
     println!("{}", paint("Recent Fallbacks", "1", color_enabled));
-    println!("{}", "─".repeat(126));
+    println!("{}", "─".repeat(74));
     println!(
-        "  {:<4}  {:<8}  {:<16}  {:<20}  {:<18}  {:<12}  {:>8}  {:>8}  {:>8}  {:>7}",
-        "#", "Command", "Domain", "Details", "Kind", "Ticket", "Input", "Output", "Delta", "Avg%"
+        "  {:<4}  {:<8}  {:<16}  {:>8}  {:>8}  {:>8}  {:>7}",
+        "#", "Command", "Domain", "Input", "Output", "Delta", "Avg%"
     );
-    println!("{}", "─".repeat(126));
+    println!("{}", "─".repeat(74));
 
     for (idx, row) in rows.iter().enumerate() {
         let command = paint(
@@ -1405,9 +1399,6 @@ fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
             color_enabled,
         );
         let domain = pad_right(&truncate_text(&row.domain, 16), 16);
-        let details = pad_right(&truncate_text(&row.details, 20), 20);
-        let kind = pad_right(&truncate_text(&row.issue_kind, 18), 18);
-        let ticket = pad_right(&truncate_text(&row.ticket_id, 12), 12);
         let input = pad_left(&compact_number(row.original_tokens), 8);
         let output = pad_left(&compact_number(row.filtered_tokens), 8);
         let delta = pad_left(&compact_number(row.token_delta), 8);
@@ -1418,13 +1409,10 @@ fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
         );
 
         println!(
-            "  {:<4}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
+            "  {:<4}  {}  {}  {}  {}  {}  {}",
             idx + 1,
             command,
             domain,
-            details,
-            kind,
-            ticket,
             input,
             output,
             delta,
@@ -1432,7 +1420,7 @@ fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
         );
     }
 
-    println!("{}", "─".repeat(126));
+    println!("{}", "─".repeat(74));
 }
 
 fn period_usage_rows(records: &[UsageRecord], kind: GainPeriodKind) -> Vec<GainPeriodJson> {
