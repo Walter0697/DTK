@@ -895,6 +895,9 @@ fn print_gain_usage() {
     eprintln!("  dtk gain --daily");
     eprintln!("  dtk gain --weekly");
     eprintln!("  dtk gain --monthly");
+    eprintln!(
+        "  --issues  show fallback cases where parsed output was larger than original; pair with --ticket-id to inspect a session"
+    );
     eprintln!("Grouping values:");
     eprintln!("  command   group by executable name, like curl or git");
     eprintln!("  domain    group by host for curl URLs, like dummyjson.com");
