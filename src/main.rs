@@ -7,9 +7,9 @@ use std::process::{Command, ExitCode};
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
     add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir,
-    filtered_payload_path, install_agent_guidance, install_config_skill, read_store_index,
-    runtime_store_dir, telemetry_db_path, token_count_for_path, uninstall_agent_guidance,
-    AgentTarget, HookRule,
+    end_telemetry_session, filtered_payload_path, init_telemetry_schema, install_agent_guidance,
+    install_config_skill, read_store_index, runtime_store_dir, start_telemetry_session,
+    telemetry_db_path, token_count_for_path, uninstall_agent_guidance, AgentTarget, HookRule,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -60,6 +60,7 @@ struct TelemetryRecord {
     command: String,
     domain: String,
     details: String,
+    ticket_id: String,
     original_tokens: i64,
     filtered_tokens: i64,
     token_delta: i64,
@@ -99,6 +100,8 @@ struct GainPeriodJson {
 #[derive(Debug, Clone, Serialize)]
 struct GainReportJson {
     group_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ticket_id: Option<String>,
     summary: GainSummaryJson,
     groups: Vec<GainGroupJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +123,7 @@ struct GainOptions {
     json_output: bool,
     group_by: GainGroupBy,
     limit: Option<usize>,
+    ticket_id: Option<String>,
     all: bool,
     daily: bool,
     weekly: bool,
@@ -148,6 +152,10 @@ fn main() -> ExitCode {
 
     if command == "cache" {
         return run_cache_command(args.collect());
+    }
+
+    if command == "telemetry" {
+        return run_telemetry_command(args.collect());
     }
 
     if command == "gain" {
@@ -276,11 +284,12 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|gain|version|help> [--agent all|codex|claude|cursor]"
+        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|telemetry|gain|version|help> [--agent all|codex|claude|cursor]"
     );
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
     eprintln!("  dtk cache <list|show> [ref_id]");
+    eprintln!("  dtk telemetry <start|end> [--ticket-id ID|--ticketId ID]");
     eprintln!("  dtk gain [--limit N]");
     eprintln!("  dtk version");
     eprintln!("  dtk doctor");
@@ -477,6 +486,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         json_output: false,
         group_by: GainGroupBy::Signature,
         limit: Some(10),
+        ticket_id: None,
         all: false,
         daily: false,
         weekly: false,
@@ -500,6 +510,17 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             }
             "--json" => {
                 options.json_output = true;
+            }
+            "--ticket-id" | "--ticketId" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --ticket-id");
+                    return ExitCode::from(2);
+                };
+                if value.trim().is_empty() {
+                    eprintln!("invalid ticketId: {value}");
+                    return ExitCode::from(2);
+                }
+                options.ticket_id = Some(value);
             }
             "--group-by" => {
                 let Some(value) = iter.next() else {
@@ -561,6 +582,10 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if let Err(err) = init_telemetry_schema(&connection) {
+        eprintln!("failed to initialize telemetry db: {err}");
+        return ExitCode::from(1);
+    }
 
     let records = match load_telemetry_records(&connection) {
         Ok(records) => records,
@@ -568,6 +593,15 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             eprintln!("failed to read telemetry data: {err}");
             return ExitCode::from(1);
         }
+    };
+
+    let records = if let Some(ticket_id) = options.ticket_id.as_deref() {
+        records
+            .into_iter()
+            .filter(|record| record.ticket_id == ticket_id)
+            .collect::<Vec<_>>()
+    } else {
+        records
     };
 
     if records.is_empty() {
@@ -590,6 +624,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
     if options.json_output {
         let report = GainReportJson {
             group_by: options.group_by.as_str().to_string(),
+            ticket_id: options.ticket_id.clone(),
             summary: summary.clone(),
             groups: group_rows.iter().map(group_row_to_json).collect(),
             daily: if options.all || options.daily {
@@ -647,7 +682,13 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         return ExitCode::from(0);
     }
 
-    print_gain_report(&summary, &group_rows, options.group_by, color_enabled);
+    print_gain_report(
+        &summary,
+        &group_rows,
+        options.group_by,
+        options.ticket_id.as_deref(),
+        color_enabled,
+    );
 
     if options.all {
         println!();
@@ -673,13 +714,87 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
+fn run_telemetry_command(args: Vec<String>) -> ExitCode {
+    let mut iter = args.into_iter();
+    let Some(subcommand) = iter.next() else {
+        print_telemetry_usage();
+        return ExitCode::from(2);
+    };
+
+    let mut ticket_id: Option<String> = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--ticket-id" | "--ticketId" => {
+                let Some(value) = iter.next() else {
+                    eprintln!("missing value for --ticket-id");
+                    return ExitCode::from(2);
+                };
+                if value.trim().is_empty() {
+                    eprintln!("invalid ticketId: {value}");
+                    return ExitCode::from(2);
+                }
+                ticket_id = Some(value);
+            }
+            "--help" | "-h" => {
+                print_telemetry_usage();
+                return ExitCode::from(0);
+            }
+            other => {
+                eprintln!("unknown telemetry argument: {other}");
+                print_telemetry_usage();
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let store_dir = runtime_store_dir();
+    match subcommand.as_str() {
+        "start" => match start_telemetry_session(&store_dir, ticket_id) {
+            Ok(session) => {
+                println!(
+                    "telemetry started: ticketId={} session={}",
+                    session.ticket_id, session.id
+                );
+                ExitCode::from(0)
+            }
+            Err(err) => {
+                eprintln!("failed to start telemetry: {err}");
+                ExitCode::from(1)
+            }
+        },
+        "end" => match end_telemetry_session(&store_dir) {
+            Ok(session) => {
+                println!(
+                    "telemetry ended: ticketId={} session={}",
+                    session.ticket_id, session.id
+                );
+                ExitCode::from(0)
+            }
+            Err(err) => {
+                eprintln!("failed to end telemetry: {err}");
+                ExitCode::from(1)
+            }
+        },
+        "--help" | "-h" | "help" => {
+            print_telemetry_usage();
+            ExitCode::from(0)
+        }
+        other => {
+            eprintln!("unknown telemetry subcommand: {other}");
+            print_telemetry_usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn print_gain_usage() {
     eprintln!(
-        "Usage: dtk gain [--limit N] [--json] [--group-by command|domain|details|signature] [--all|--daily|--weekly|--monthly]"
+        "Usage: dtk gain [--limit N] [--json] [--ticket-id ID|--ticketId ID] [--group-by command|domain|details|signature] [--all|--daily|--weekly|--monthly]"
     );
     eprintln!("  dtk gain");
     eprintln!("  dtk gain --limit 20");
     eprintln!("  dtk gain --json");
+    eprintln!("  dtk gain --ticket-id abc123");
     eprintln!("  dtk gain --group-by domain");
     eprintln!("  dtk gain --group-by command");
     eprintln!("  dtk gain --group-by details");
@@ -693,20 +808,33 @@ fn print_gain_usage() {
     eprintln!("  domain    group by host for curl URLs, like dummyjson.com");
     eprintln!("  details   group by the normalized full command line");
     eprintln!("  signature group by the full command/domain/details triple");
+    eprintln!("Filters:");
+    eprintln!("  ticketId  filter by telemetry ticket with --ticket-id or --ticketId");
+}
+
+fn print_telemetry_usage() {
+    eprintln!("Usage: dtk telemetry <start|end> [--ticket-id ID|--ticketId ID]");
+    eprintln!("  dtk telemetry start");
+    eprintln!("  dtk telemetry start --ticket-id abc123");
+    eprintln!("  dtk telemetry start --ticketId abc123");
+    eprintln!("  dtk telemetry end");
 }
 
 fn print_gain_report(
     summary: &GainSummaryJson,
     rows: &[GainRow],
     group_by: GainGroupBy,
+    ticket_id: Option<&str>,
     color_enabled: bool,
 ) {
     let savings_pct = summary.saved_pct;
+    let title = if ticket_id.is_some() {
+        "DTK Token Savings (Ticket Scope)"
+    } else {
+        "DTK Token Savings (Local Scope)"
+    };
 
-    println!(
-        "{}",
-        paint("DTK Token Savings (Local Scope)", "1;36", color_enabled)
-    );
+    println!("{}", paint(title, "1;36", color_enabled));
     println!("{}", paint(&"═".repeat(56), "36", color_enabled));
     println!();
     print_metric_line("Total runs", &summary.runs.to_string(), color_enabled);
@@ -946,7 +1074,7 @@ fn print_gain_table(rows: &[GainRow], group_by: GainGroupBy, color_enabled: bool
 fn load_telemetry_records(connection: &Connection) -> io::Result<Vec<TelemetryRecord>> {
     let mut statement = connection
         .prepare(
-            "SELECT em.created_at_unix_ms, cs.command, cs.domain, cs.details, em.original_tokens, em.filtered_tokens, em.token_delta
+            "SELECT em.created_at_unix_ms, cs.command, cs.domain, cs.details, em.ticket_id, em.original_tokens, em.filtered_tokens, em.token_delta
              FROM exec_metrics em
              JOIN command_signatures cs ON cs.id = em.signature_id
              ORDER BY em.created_at_unix_ms ASC, em.ref_id ASC",
@@ -960,9 +1088,10 @@ fn load_telemetry_records(connection: &Connection) -> io::Result<Vec<TelemetryRe
                 command: row.get(1)?,
                 domain: row.get(2)?,
                 details: row.get(3)?,
-                original_tokens: row.get(4)?,
-                filtered_tokens: row.get(5)?,
-                token_delta: row.get(6)?,
+                ticket_id: row.get(4)?,
+                original_tokens: row.get(5)?,
+                filtered_tokens: row.get(6)?,
+                token_delta: row.get(7)?,
             })
         })
         .map_err(|err| {
@@ -1887,12 +2016,13 @@ mod tests {
     #[test]
     fn usage_mentions_install_and_uninstall() {
         let usage =
-            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|gain|version|help> [--agent all|codex|claude|cursor]";
+            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|telemetry|gain|version|help> [--agent all|codex|claude|cursor]";
         assert!(usage.contains("install"));
         assert!(usage.contains("uninstall"));
         assert!(usage.contains("exec"));
         assert!(usage.contains("retrieve"));
         assert!(usage.contains("cache"));
+        assert!(usage.contains("telemetry"));
         assert!(usage.contains("gain"));
         assert!(usage.contains("version"));
     }
@@ -1905,6 +2035,7 @@ mod tests {
                 command: "curl".to_string(),
                 domain: "dummyjson.com".to_string(),
                 details: "curl -sS https://dummyjson.com/users".to_string(),
+                ticket_id: "ticket-1".to_string(),
                 original_tokens: 100,
                 filtered_tokens: 25,
                 token_delta: 75,
@@ -1914,6 +2045,7 @@ mod tests {
                 command: "git".to_string(),
                 domain: String::new(),
                 details: "git status".to_string(),
+                ticket_id: String::new(),
                 original_tokens: 80,
                 filtered_tokens: 20,
                 token_delta: 60,

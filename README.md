@@ -30,6 +30,7 @@ DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjs
 ```bash
 dtk gain
 dtk gain --json
+dtk gain --ticket-id ticket-123
 dtk gain --group-by domain
 dtk gain --group-by command
 dtk gain --group-by details
@@ -46,6 +47,7 @@ Grouping modes:
 - `domain` groups `curl` telemetry by host, like `dummyjson.com`
 - `details` groups by the normalized full command line
 - `signature` groups by the full command, domain, and details triple
+- `ticket-id` filters the report to one telemetry session ticket
 
 Before, the payload is the full API response:
 
@@ -117,6 +119,16 @@ If you need more fields later, use the `_dtk.ref_id` from the filtered output:
 ```bash
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
+
+Telemetry sessions can be bracketed around related commands:
+
+```bash
+dtk telemetry start
+dtk telemetry start --ticket-id ticket-123
+dtk telemetry end
+```
+
+While a session is active, DTK writes the session ticket into each telemetry row. That lets you scope later reports with `dtk gain --ticket-id ticket-123`.
 
 ## How DTK Works
 

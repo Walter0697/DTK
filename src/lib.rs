@@ -16,6 +16,7 @@ const DTK_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TELEMETRY_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct FilterConfig {
     #[serde(default)]
@@ -74,6 +75,14 @@ pub struct ExecMetricsInput {
     pub signature: CommandSignatureInput,
     pub original_tokens: usize,
     pub filtered_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetrySession {
+    pub id: i64,
+    pub ticket_id: String,
+    pub started_at_unix_ms: i64,
+    pub ended_at_unix_ms: Option<i64>,
 }
 
 pub fn is_json_payload(text: &str) -> bool {
@@ -765,6 +774,7 @@ pub fn record_exec_metrics(
             io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
         })?;
     init_telemetry_schema(&connection)?;
+    let active_session = active_telemetry_session(&connection)?;
 
     let transaction = connection.transaction().map_err(|err| {
         io::Error::new(io::ErrorKind::Other, format!("start telemetry tx: {err}"))
@@ -814,14 +824,21 @@ pub fn record_exec_metrics(
     } else {
         0.0
     };
+    let telemetry_session_id = active_session.as_ref().map(|session| session.id);
+    let ticket_id = active_session
+        .as_ref()
+        .map(|session| session.ticket_id.as_str())
+        .unwrap_or("");
 
     transaction
         .execute(
-            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, telemetry_session_id, ticket_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 metrics.ref_id.as_str(),
                 created_at_unix_ms,
                 signature_id,
+                telemetry_session_id,
+                ticket_id,
                 original_tokens,
                 filtered_tokens,
                 token_delta,
@@ -837,7 +854,117 @@ pub fn record_exec_metrics(
     Ok(())
 }
 
-fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
+pub fn start_telemetry_session(
+    store_dir: impl AsRef<Path>,
+    ticket_id: Option<String>,
+) -> io::Result<TelemetrySession> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+
+    let db_path = telemetry_db_path(store_dir);
+    let connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_telemetry_schema(&connection)?;
+
+    if let Some(active) = active_telemetry_session(&connection)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("telemetry already active for ticketId {}", active.ticket_id),
+        ));
+    }
+
+    let ticket_id = match ticket_id {
+        Some(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ticketId cannot be empty",
+                ));
+            }
+            value.to_string()
+        }
+        None => generate_telemetry_ticket_id(),
+    };
+
+    let started_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "started_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    connection
+        .execute(
+            "INSERT INTO telemetry_sessions (ticket_id, started_at_unix_ms) VALUES (?1, ?2)",
+            params![ticket_id.as_str(), started_at_unix_ms],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("start telemetry session: {err}"),
+            )
+        })?;
+
+    let id = connection.last_insert_rowid();
+    Ok(TelemetrySession {
+        id,
+        ticket_id,
+        started_at_unix_ms,
+        ended_at_unix_ms: None,
+    })
+}
+
+pub fn end_telemetry_session(store_dir: impl AsRef<Path>) -> io::Result<TelemetrySession> {
+    let store_dir = store_dir.as_ref();
+    let db_path = telemetry_db_path(store_dir);
+    let connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_telemetry_schema(&connection)?;
+
+    let Some(active) = active_telemetry_session(&connection)? else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no active telemetry session",
+        ));
+    };
+
+    let ended_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ended_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    connection
+        .execute(
+            "UPDATE telemetry_sessions SET ended_at_unix_ms = ?1 WHERE id = ?2",
+            params![ended_at_unix_ms, active.id],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("end telemetry session: {err}"),
+            )
+        })?;
+
+    Ok(TelemetrySession {
+        ended_at_unix_ms: Some(ended_at_unix_ms),
+        ..active
+    })
+}
+
+pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
     connection
         .execute_batch(
             r#"
@@ -853,6 +980,8 @@ fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 ref_id TEXT PRIMARY KEY,
                 created_at_unix_ms INTEGER NOT NULL,
                 signature_id INTEGER NOT NULL,
+                telemetry_session_id INTEGER,
+                ticket_id TEXT NOT NULL DEFAULT '',
                 original_tokens INTEGER NOT NULL,
                 filtered_tokens INTEGER NOT NULL,
                 token_delta INTEGER NOT NULL,
@@ -860,10 +989,19 @@ fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
             );
 
+            CREATE TABLE IF NOT EXISTS telemetry_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                started_at_unix_ms INTEGER NOT NULL,
+                ended_at_unix_ms INTEGER
+            );
+
             CREATE INDEX IF NOT EXISTS idx_exec_metrics_created_at_unix_ms
                 ON exec_metrics(created_at_unix_ms);
             CREATE INDEX IF NOT EXISTS idx_exec_metrics_signature_id
                 ON exec_metrics(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_active
+                ON telemetry_sessions(ended_at_unix_ms, started_at_unix_ms);
             "#,
         )
         .map_err(|err| {
@@ -871,7 +1009,127 @@ fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 io::ErrorKind::Other,
                 format!("create telemetry schema: {err}"),
             )
+        })?;
+
+    ensure_telemetry_column(
+        connection,
+        "exec_metrics",
+        "telemetry_session_id",
+        "INTEGER",
+    )?;
+    ensure_telemetry_column(
+        connection,
+        "exec_metrics",
+        "ticket_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_exec_metrics_ticket_id ON exec_metrics(ticket_id)",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("create telemetry index: {err}"),
+            )
+        })?;
+
+    Ok(())
+}
+
+fn ensure_telemetry_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    column_definition: &str,
+) -> io::Result<()> {
+    if telemetry_column_exists(connection, table, column)? {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
+    connection.execute(&statement, []).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("migrate telemetry schema: {err}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn telemetry_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("inspect telemetry schema: {err}"),
+            )
+        })?;
+    let mut rows = statement.query([]).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("query telemetry schema: {err}"),
+        )
+    })?;
+    while let Some(row) = rows.next().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("read telemetry schema: {err}"),
+        )
+    })? {
+        let name: String = row.get(1).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("read telemetry column: {err}"),
+            )
+        })?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn active_telemetry_session(connection: &Connection) -> io::Result<Option<TelemetrySession>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, ticket_id, started_at_unix_ms, ended_at_unix_ms
+             FROM telemetry_sessions
+             WHERE ended_at_unix_ms IS NULL
+             ORDER BY started_at_unix_ms DESC, id DESC
+             LIMIT 1",
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("prepare telemetry session query: {err}"),
+            )
+        })?;
+
+    let result = statement.query_row([], |row| {
+        Ok(TelemetrySession {
+            id: row.get(0)?,
+            ticket_id: row.get(1)?,
+            started_at_unix_ms: row.get(2)?,
+            ended_at_unix_ms: row.get(3)?,
         })
+    });
+
+    match result {
+        Ok(session) => Ok(Some(session)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("read telemetry session: {err}"),
+        )),
+    }
+}
+
+fn generate_telemetry_ticket_id() -> String {
+    let sequence = TELEMETRY_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("dtk-tele-{:x}-{sequence}", now_unix_ms())
 }
 
 fn extract_curl_domain(command_args: &[String]) -> Option<String> {
@@ -1851,12 +2109,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        cleanup_expired_payloads, collect_field_paths, default_store_dir, filter_json_payload,
-        filter_json_payload_with_metadata, is_json_payload, parse_json_payload, platform_data_dir,
-        preview_expired_payloads, record_exec_metrics, recover_original_payload,
-        retrieve_json_payload, retrieve_original_payload, runtime_store_dir, stable_ref_id,
-        store_original_payload, store_original_payload_with_retention, summarize_command_signature,
-        telemetry_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
+        cleanup_expired_payloads, collect_field_paths, default_store_dir, end_telemetry_session,
+        filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
+        parse_json_payload, platform_data_dir, preview_expired_payloads, record_exec_metrics,
+        recover_original_payload, retrieve_json_payload, retrieve_original_payload,
+        runtime_store_dir, stable_ref_id, start_telemetry_session, store_original_payload,
+        store_original_payload_with_retention, summarize_command_signature, telemetry_db_path,
+        windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -2249,6 +2508,83 @@ mod tests {
         assert_eq!(signature_count, 1);
         assert_eq!(metric_count, 2);
         assert_eq!(domain, "dummyjson.com");
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn start_and_end_telemetry_session_round_trip() {
+        let store_dir = temp_store_dir("unit-test-telemetry-session");
+
+        let started = start_telemetry_session(&store_dir, None).expect("expected telemetry start");
+        assert!(started.ticket_id.starts_with("dtk-tele-"));
+        assert!(started.ended_at_unix_ms.is_none());
+
+        let ended = end_telemetry_session(&store_dir).expect("expected telemetry end");
+        assert_eq!(ended.id, started.id);
+        assert_eq!(ended.ticket_id, started.ticket_id);
+        assert!(ended.ended_at_unix_ms.is_some());
+
+        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
+            .expect("expected telemetry db");
+        let session_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_sessions", [], |row| {
+                row.get(0)
+            })
+            .expect("expected session count");
+        let active_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM telemetry_sessions WHERE ended_at_unix_ms IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("expected active session count");
+
+        assert_eq!(session_count, 1);
+        assert_eq!(active_count, 0);
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn records_exec_metrics_with_active_ticket_id() {
+        let store_dir = temp_store_dir("unit-test-telemetry-ticket");
+        let session =
+            start_telemetry_session(&store_dir, Some("ticket-123".to_string())).expect("start");
+        assert_eq!(session.ticket_id, "ticket-123");
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_abc_3".to_string(),
+            created_at_unix_ms: 1_715_520_200_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+
+        record_exec_metrics(&store_dir, &metrics).expect("expected telemetry write");
+
+        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
+            .expect("expected telemetry db");
+        let ticket_id: String = connection
+            .query_row(
+                "SELECT ticket_id FROM exec_metrics WHERE ref_id = ?1",
+                ["dtk_abc_3"],
+                |row| row.get(0),
+            )
+            .expect("expected ticket id");
+        let telemetry_session_id: i64 = connection
+            .query_row(
+                "SELECT telemetry_session_id FROM exec_metrics WHERE ref_id = ?1",
+                ["dtk_abc_3"],
+                |row| row.get(0),
+            )
+            .expect("expected telemetry session id");
+
+        assert_eq!(ticket_id, "ticket-123");
+        assert_eq!(telemetry_session_id, session.id);
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
