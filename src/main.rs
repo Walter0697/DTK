@@ -25,6 +25,18 @@ struct GainRow {
     saved_pct: f64,
 }
 
+struct GainIssueRow {
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    issue_kind: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GainGroupBy {
     Signature,
@@ -66,6 +78,20 @@ struct UsageRecord {
     token_delta: i64,
 }
 
+#[derive(Debug, Clone)]
+struct UsageIssueRecord {
+    created_at_unix_ms: i64,
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    issue_kind: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct GainSummaryJson {
     runs: i64,
@@ -105,11 +131,27 @@ struct GainReportJson {
     summary: GainSummaryJson,
     groups: Vec<GainGroupJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    issues: Option<Vec<GainIssueJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     daily: Option<Vec<GainPeriodJson>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     weekly: Option<Vec<GainPeriodJson>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     monthly: Option<Vec<GainPeriodJson>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GainIssueJson {
+    command: String,
+    domain: String,
+    details: String,
+    ticket_id: String,
+    issue_kind: String,
+    original_tokens: i64,
+    filtered_tokens: i64,
+    token_delta: i64,
+    token_delta_pct: f64,
+    created_at_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +166,7 @@ struct GainOptions {
     group_by: GainGroupBy,
     limit: Option<usize>,
     ticket_id: Option<String>,
+    issues: bool,
     all: bool,
     daily: bool,
     weekly: bool,
@@ -488,6 +531,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         group_by: GainGroupBy::Signature,
         limit: Some(10),
         ticket_id: None,
+        issues: false,
         all: false,
         daily: false,
         weekly: false,
@@ -511,6 +555,9 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             }
             "--json" => {
                 options.json_output = true;
+            }
+            "--issues" => {
+                options.issues = true;
             }
             "--ticket-id" | "--ticketId" => {
                 let Some(value) = iter.next() else {
@@ -596,6 +643,14 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         }
     };
 
+    let issues = match load_usage_issues(&connection) {
+        Ok(issues) => issues,
+        Err(err) => {
+            eprintln!("failed to read usage issues: {err}");
+            return ExitCode::from(1);
+        }
+    };
+
     let records = if let Some(ticket_id) = options.ticket_id.as_deref() {
         records
             .into_iter()
@@ -603,6 +658,15 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             .collect::<Vec<_>>()
     } else {
         records
+    };
+
+    let issues = if let Some(ticket_id) = options.ticket_id.as_deref() {
+        issues
+            .into_iter()
+            .filter(|issue| issue.ticket_id == ticket_id)
+            .collect::<Vec<_>>()
+    } else {
+        issues
     };
 
     if records.is_empty() {
@@ -628,6 +692,11 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             ticket_id: options.ticket_id.clone(),
             summary: summary.clone(),
             groups: group_rows.iter().map(group_row_to_json).collect(),
+            issues: if options.issues || !issues.is_empty() {
+                Some(issues.iter().take(5).map(issue_record_to_json).collect())
+            } else {
+                None
+            },
             daily: if options.all || options.daily {
                 Some(period_usage_rows(&records, GainPeriodKind::Daily))
             } else {
@@ -653,6 +722,20 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             }
         }
 
+        return ExitCode::from(0);
+    }
+
+    if options.issues {
+        if issues.is_empty() {
+            println!("no fallback issues");
+            return ExitCode::from(0);
+        }
+        let issue_rows = issues
+            .iter()
+            .take(5)
+            .map(issue_record_to_row)
+            .collect::<Vec<_>>();
+        print_gain_issue_report(&issue_rows, color_enabled);
         return ExitCode::from(0);
     }
 
@@ -690,6 +773,16 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         options.ticket_id.as_deref(),
         color_enabled,
     );
+
+    let recent_issue_rows = issues
+        .iter()
+        .take(5)
+        .map(issue_record_to_row)
+        .collect::<Vec<_>>();
+    if !recent_issue_rows.is_empty() {
+        println!();
+        print_gain_issue_report(&recent_issue_rows, color_enabled);
+    }
 
     if options.all {
         println!();
@@ -790,11 +883,12 @@ fn run_session_command(args: Vec<String>) -> ExitCode {
 
 fn print_gain_usage() {
     eprintln!(
-        "Usage: dtk gain [--limit N] [--json] [--ticket-id ID|--ticketId ID] [--group-by command|domain|details|signature] [--all|--daily|--weekly|--monthly]"
+        "Usage: dtk gain [--limit N] [--json] [--issues] [--ticket-id ID|--ticketId ID] [--group-by command|domain|details|signature] [--all|--daily|--weekly|--monthly]"
     );
     eprintln!("  dtk gain");
     eprintln!("  dtk gain --limit 20");
     eprintln!("  dtk gain --json");
+    eprintln!("  dtk gain --issues");
     eprintln!("  dtk gain --ticket-id abc123");
     eprintln!("  dtk gain --group-by domain");
     eprintln!("  dtk gain --group-by command");
@@ -1109,6 +1203,50 @@ fn load_usage_records(connection: &Connection) -> io::Result<Vec<UsageRecord>> {
     Ok(records)
 }
 
+fn load_usage_issues(connection: &Connection) -> io::Result<Vec<UsageIssueRecord>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT emi.created_at_unix_ms, cs.command, cs.domain, cs.details, emi.ticket_id, emi.issue_kind, emi.original_tokens, emi.filtered_tokens, emi.token_delta, emi.token_delta_pct
+             FROM exec_metric_issues emi
+             JOIN command_signatures cs ON cs.id = emi.signature_id
+             ORDER BY emi.created_at_unix_ms DESC, emi.ref_id DESC",
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("prepare usage issue query: {err}"))
+        })?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(UsageIssueRecord {
+                created_at_unix_ms: row.get(0)?,
+                command: row.get(1)?,
+                domain: row.get(2)?,
+                details: row.get(3)?,
+                ticket_id: row.get(4)?,
+                issue_kind: row.get(5)?,
+                original_tokens: row.get(6)?,
+                filtered_tokens: row.get(7)?,
+                token_delta: row.get(8)?,
+                token_delta_pct: row.get(9)?,
+            })
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("query usage issue rows: {err}"),
+            )
+        })?;
+
+    let mut issues = Vec::new();
+    for row in rows {
+        issues.push(row.map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("read usage issue row: {err}"))
+        })?);
+    }
+
+    Ok(issues)
+}
+
 fn summarize_usage(records: &[UsageRecord]) -> GainSummaryJson {
     let runs = records.len() as i64;
     let original_tokens = records.iter().map(|row| row.original_tokens).sum::<i64>();
@@ -1216,6 +1354,85 @@ fn group_row_to_json(row: &GainRow) -> GainGroupJson {
         token_delta: row.token_delta,
         saved_pct: row.saved_pct,
     }
+}
+
+fn issue_record_to_row(record: &UsageIssueRecord) -> GainIssueRow {
+    GainIssueRow {
+        command: record.command.clone(),
+        domain: record.domain.clone(),
+        details: record.details.clone(),
+        ticket_id: record.ticket_id.clone(),
+        issue_kind: record.issue_kind.clone(),
+        original_tokens: record.original_tokens,
+        filtered_tokens: record.filtered_tokens,
+        token_delta: record.token_delta,
+        token_delta_pct: record.token_delta_pct,
+    }
+}
+
+fn issue_record_to_json(record: &UsageIssueRecord) -> GainIssueJson {
+    GainIssueJson {
+        command: record.command.clone(),
+        domain: record.domain.clone(),
+        details: record.details.clone(),
+        ticket_id: record.ticket_id.clone(),
+        issue_kind: record.issue_kind.clone(),
+        original_tokens: record.original_tokens,
+        filtered_tokens: record.filtered_tokens,
+        token_delta: record.token_delta,
+        token_delta_pct: record.token_delta_pct,
+        created_at_unix_ms: record.created_at_unix_ms,
+    }
+}
+
+fn print_gain_issue_report(rows: &[GainIssueRow], color_enabled: bool) {
+    if rows.is_empty() {
+        return;
+    }
+
+    println!("{}", paint("Recent Fallbacks", "1", color_enabled));
+    println!("{}", "─".repeat(126));
+    println!(
+        "  {:<4}  {:<8}  {:<16}  {:<20}  {:<18}  {:<12}  {:>8}  {:>8}  {:>8}  {:>7}",
+        "#", "Command", "Domain", "Details", "Kind", "Ticket", "Input", "Output", "Delta", "Avg%"
+    );
+    println!("{}", "─".repeat(126));
+
+    for (idx, row) in rows.iter().enumerate() {
+        let command = paint(
+            &pad_right(&truncate_text(&row.command, 8), 8),
+            "34",
+            color_enabled,
+        );
+        let domain = pad_right(&truncate_text(&row.domain, 16), 16);
+        let details = pad_right(&truncate_text(&row.details, 20), 20);
+        let kind = pad_right(&truncate_text(&row.issue_kind, 18), 18);
+        let ticket = pad_right(&truncate_text(&row.ticket_id, 12), 12);
+        let input = pad_left(&compact_number(row.original_tokens), 8);
+        let output = pad_left(&compact_number(row.filtered_tokens), 8);
+        let delta = pad_left(&compact_number(row.token_delta), 8);
+        let avg = paint(
+            &pad_left(&format!("{:.1}%", row.token_delta_pct), 7),
+            "1;31",
+            color_enabled,
+        );
+
+        println!(
+            "  {:<4}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
+            idx + 1,
+            command,
+            domain,
+            details,
+            kind,
+            ticket,
+            input,
+            output,
+            delta,
+            avg,
+        );
+    }
+
+    println!("{}", "─".repeat(126));
 }
 
 fn period_usage_rows(records: &[UsageRecord], kind: GainPeriodKind) -> Vec<GainPeriodJson> {
