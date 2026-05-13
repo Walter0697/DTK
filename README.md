@@ -25,30 +25,6 @@ dtk exec -- curl -sS https://dummyjson.com/users
 
 DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjson_users.json`, then uses it automatically when no explicit config is passed. It stores the original payload locally so you can recover more fields later.
 
-`dtk gain` examples:
-
-```bash
-dtk gain
-dtk gain --json
-dtk gain --ticket-id ticket-123
-dtk gain --group-by domain
-dtk gain --group-by command
-dtk gain --group-by details
-dtk gain --group-by signature
-dtk gain --all
-dtk gain --daily
-dtk gain --weekly
-dtk gain --monthly
-```
-
-Grouping modes:
-
-- `command` groups by executable name, like `curl` or `git`
-- `domain` groups `curl` telemetry by host, like `dummyjson.com`
-- `details` groups by the normalized full command line
-- `signature` groups by the full command, domain, and details triple
-- `ticket-id` filters the report to one telemetry session ticket
-
 Before, the payload is the full API response:
 
 ```json
@@ -119,16 +95,6 @@ If you need more fields later, use the `_dtk.ref_id` from the filtered output:
 ```bash
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
-
-Telemetry sessions can be bracketed around related commands:
-
-```bash
-dtk telemetry start
-dtk telemetry start --ticket-id ticket-123
-dtk telemetry end
-```
-
-While a session is active, DTK writes the session ticket into each telemetry row. That lets you scope later reports with `dtk gain --ticket-id ticket-123`.
 
 ## How DTK Works
 
@@ -273,11 +239,49 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk retrieve`
 - `dtk cache list`
 - `dtk cache show <ref_id>`
+- `dtk gain`
+- `dtk session`
 - `dtk doctor`
 - `dtk install`
 - `dtk uninstall`
 - `dtk hook add`
 - `dtk version`
+
+### Gain
+
+`dtk gain` examples:
+
+```bash
+dtk gain
+dtk gain --json
+dtk gain --ticket-id ticket-123
+dtk gain --group-by domain
+dtk gain --group-by command
+dtk gain --group-by details
+dtk gain --group-by signature
+dtk gain --all
+dtk gain --daily
+dtk gain --weekly
+dtk gain --monthly
+```
+
+Grouping modes:
+
+- `command` groups by executable name, like `curl` or `git`
+- `domain` groups `curl` telemetry by host, like `dummyjson.com`
+- `details` groups by the normalized full command line
+- `signature` groups by the full command, domain, and details triple
+- `ticket-id` filters the report to one session ticket
+
+### Session
+
+```bash
+dtk session start
+dtk session start --ticket-id ticket-123
+dtk session end
+```
+
+While a session is active, DTK writes the session ticket into each metrics row. That lets you scope later reports with `dtk gain --ticket-id ticket-123`.
 
 ## Development
 

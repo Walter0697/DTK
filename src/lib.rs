@@ -78,7 +78,7 @@ pub struct ExecMetricsInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TelemetrySession {
+pub struct SessionRecord {
     pub id: i64,
     pub ticket_id: String,
     pub started_at_unix_ms: i64,
@@ -774,7 +774,7 @@ pub fn record_exec_metrics(
             io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
         })?;
     init_telemetry_schema(&connection)?;
-    let active_session = active_telemetry_session(&connection)?;
+    let active_session = active_session(&connection)?;
 
     let transaction = connection.transaction().map_err(|err| {
         io::Error::new(io::ErrorKind::Other, format!("start telemetry tx: {err}"))
@@ -854,10 +854,10 @@ pub fn record_exec_metrics(
     Ok(())
 }
 
-pub fn start_telemetry_session(
+pub fn start_session(
     store_dir: impl AsRef<Path>,
     ticket_id: Option<String>,
-) -> io::Result<TelemetrySession> {
+) -> io::Result<SessionRecord> {
     let store_dir = store_dir.as_ref();
     fs::create_dir_all(store_dir)?;
 
@@ -871,7 +871,7 @@ pub fn start_telemetry_session(
         })?;
     init_telemetry_schema(&connection)?;
 
-    if let Some(active) = active_telemetry_session(&connection)? {
+    if let Some(active) = active_session(&connection)? {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("telemetry already active for ticketId {}", active.ticket_id),
@@ -912,7 +912,7 @@ pub fn start_telemetry_session(
         })?;
 
     let id = connection.last_insert_rowid();
-    Ok(TelemetrySession {
+    Ok(SessionRecord {
         id,
         ticket_id,
         started_at_unix_ms,
@@ -920,7 +920,7 @@ pub fn start_telemetry_session(
     })
 }
 
-pub fn end_telemetry_session(store_dir: impl AsRef<Path>) -> io::Result<TelemetrySession> {
+pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
     let store_dir = store_dir.as_ref();
     let db_path = telemetry_db_path(store_dir);
     let connection = Connection::open(db_path)
@@ -932,7 +932,7 @@ pub fn end_telemetry_session(store_dir: impl AsRef<Path>) -> io::Result<Telemetr
         })?;
     init_telemetry_schema(&connection)?;
 
-    let Some(active) = active_telemetry_session(&connection)? else {
+    let Some(active) = active_session(&connection)? else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "no active telemetry session",
@@ -958,7 +958,7 @@ pub fn end_telemetry_session(store_dir: impl AsRef<Path>) -> io::Result<Telemetr
             )
         })?;
 
-    Ok(TelemetrySession {
+    Ok(SessionRecord {
         ended_at_unix_ms: Some(ended_at_unix_ms),
         ..active
     })
@@ -1092,7 +1092,7 @@ fn telemetry_column_exists(connection: &Connection, table: &str, column: &str) -
     Ok(false)
 }
 
-fn active_telemetry_session(connection: &Connection) -> io::Result<Option<TelemetrySession>> {
+fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> {
     let mut statement = connection
         .prepare(
             "SELECT id, ticket_id, started_at_unix_ms, ended_at_unix_ms
@@ -1109,7 +1109,7 @@ fn active_telemetry_session(connection: &Connection) -> io::Result<Option<Teleme
         })?;
 
     let result = statement.query_row([], |row| {
-        Ok(TelemetrySession {
+        Ok(SessionRecord {
             id: row.get(0)?,
             ticket_id: row.get(1)?,
             started_at_unix_ms: row.get(2)?,
@@ -2109,11 +2109,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        cleanup_expired_payloads, collect_field_paths, default_store_dir, end_telemetry_session,
+        cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
         filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
         parse_json_payload, platform_data_dir, preview_expired_payloads, record_exec_metrics,
         recover_original_payload, retrieve_json_payload, retrieve_original_payload,
-        runtime_store_dir, stable_ref_id, start_telemetry_session, store_original_payload,
+        runtime_store_dir, stable_ref_id, start_session, store_original_payload,
         store_original_payload_with_retention, summarize_command_signature, telemetry_db_path,
         windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
     };
@@ -2512,14 +2512,14 @@ mod tests {
     }
 
     #[test]
-    fn start_and_end_telemetry_session_round_trip() {
+    fn start_and_end_session_round_trip() {
         let store_dir = temp_store_dir("unit-test-telemetry-session");
 
-        let started = start_telemetry_session(&store_dir, None).expect("expected telemetry start");
+        let started = start_session(&store_dir, None).expect("expected session start");
         assert!(started.ticket_id.starts_with("dtk-tele-"));
         assert!(started.ended_at_unix_ms.is_none());
 
-        let ended = end_telemetry_session(&store_dir).expect("expected telemetry end");
+        let ended = end_session(&store_dir).expect("expected session end");
         assert_eq!(ended.id, started.id);
         assert_eq!(ended.ticket_id, started.ticket_id);
         assert!(ended.ended_at_unix_ms.is_some());
@@ -2547,8 +2547,7 @@ mod tests {
     #[test]
     fn records_exec_metrics_with_active_ticket_id() {
         let store_dir = temp_store_dir("unit-test-telemetry-ticket");
-        let session =
-            start_telemetry_session(&store_dir, Some("ticket-123".to_string())).expect("start");
+        let session = start_session(&store_dir, Some("ticket-123".to_string())).expect("start");
         assert_eq!(session.ticket_id, "ticket-123");
 
         let metrics = ExecMetricsInput {

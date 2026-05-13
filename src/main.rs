@@ -6,10 +6,10 @@ use std::process::{Command, ExitCode};
 
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
-    add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir,
-    end_telemetry_session, filtered_payload_path, init_telemetry_schema, install_agent_guidance,
-    install_config_skill, read_store_index, runtime_store_dir, start_telemetry_session,
-    telemetry_db_path, token_count_for_path, uninstall_agent_guidance, AgentTarget, HookRule,
+    add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir, end_session,
+    filtered_payload_path, init_telemetry_schema, install_agent_guidance, install_config_skill,
+    read_store_index, runtime_store_dir, start_session, telemetry_db_path, token_count_for_path,
+    uninstall_agent_guidance, AgentTarget, HookRule,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -154,8 +154,8 @@ fn main() -> ExitCode {
         return run_cache_command(args.collect());
     }
 
-    if command == "telemetry" {
-        return run_telemetry_command(args.collect());
+    if command == "session" {
+        return run_session_command(args.collect());
     }
 
     if command == "gain" {
@@ -284,12 +284,13 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|telemetry|gain|version|help> [--agent all|codex|claude|cursor]"
+        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
     );
+    eprintln!("Commands:");
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
     eprintln!("  dtk cache <list|show> [ref_id]");
-    eprintln!("  dtk telemetry <start|end> [--ticket-id ID|--ticketId ID]");
+    eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");
     eprintln!("  dtk gain [--limit N]");
     eprintln!("  dtk version");
     eprintln!("  dtk doctor");
@@ -714,10 +715,10 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
-fn run_telemetry_command(args: Vec<String>) -> ExitCode {
+fn run_session_command(args: Vec<String>) -> ExitCode {
     let mut iter = args.into_iter();
     let Some(subcommand) = iter.next() else {
-        print_telemetry_usage();
+        print_session_usage();
         return ExitCode::from(2);
     };
 
@@ -736,12 +737,12 @@ fn run_telemetry_command(args: Vec<String>) -> ExitCode {
                 ticket_id = Some(value);
             }
             "--help" | "-h" => {
-                print_telemetry_usage();
+                print_session_usage();
                 return ExitCode::from(0);
             }
             other => {
-                eprintln!("unknown telemetry argument: {other}");
-                print_telemetry_usage();
+                eprintln!("unknown session argument: {other}");
+                print_session_usage();
                 return ExitCode::from(2);
             }
         }
@@ -749,39 +750,39 @@ fn run_telemetry_command(args: Vec<String>) -> ExitCode {
 
     let store_dir = runtime_store_dir();
     match subcommand.as_str() {
-        "start" => match start_telemetry_session(&store_dir, ticket_id) {
+        "start" => match start_session(&store_dir, ticket_id) {
             Ok(session) => {
                 println!(
-                    "telemetry started: ticketId={} session={}",
+                    "session started: ticketId={} session={}",
                     session.ticket_id, session.id
                 );
                 ExitCode::from(0)
             }
             Err(err) => {
-                eprintln!("failed to start telemetry: {err}");
+                eprintln!("failed to start session: {err}");
                 ExitCode::from(1)
             }
         },
-        "end" => match end_telemetry_session(&store_dir) {
+        "end" => match end_session(&store_dir) {
             Ok(session) => {
                 println!(
-                    "telemetry ended: ticketId={} session={}",
+                    "session ended: ticketId={} session={}",
                     session.ticket_id, session.id
                 );
                 ExitCode::from(0)
             }
             Err(err) => {
-                eprintln!("failed to end telemetry: {err}");
+                eprintln!("failed to end session: {err}");
                 ExitCode::from(1)
             }
         },
         "--help" | "-h" | "help" => {
-            print_telemetry_usage();
+            print_session_usage();
             ExitCode::from(0)
         }
         other => {
-            eprintln!("unknown telemetry subcommand: {other}");
-            print_telemetry_usage();
+            eprintln!("unknown session subcommand: {other}");
+            print_session_usage();
             ExitCode::from(2)
         }
     }
@@ -809,15 +810,17 @@ fn print_gain_usage() {
     eprintln!("  details   group by the normalized full command line");
     eprintln!("  signature group by the full command/domain/details triple");
     eprintln!("Filters:");
-    eprintln!("  ticketId  filter by telemetry ticket with --ticket-id or --ticketId");
+    eprintln!("  ticketId  filter by session ticket with --ticket-id or --ticketId");
 }
 
-fn print_telemetry_usage() {
-    eprintln!("Usage: dtk telemetry <start|end> [--ticket-id ID|--ticketId ID]");
-    eprintln!("  dtk telemetry start");
-    eprintln!("  dtk telemetry start --ticket-id abc123");
-    eprintln!("  dtk telemetry start --ticketId abc123");
-    eprintln!("  dtk telemetry end");
+fn print_session_usage() {
+    eprintln!("Usage: dtk session <start|end> [--ticket-id ID|--ticketId ID]");
+    eprintln!("Session commands:");
+    eprintln!("  dtk session start");
+    eprintln!("  dtk session start --ticket-id abc123");
+    eprintln!("  dtk session start --ticketId abc123");
+    eprintln!("  dtk session end");
+    eprintln!("  Records the active ticketId on metrics while the session is open.");
 }
 
 fn print_gain_report(
@@ -2016,13 +2019,13 @@ mod tests {
     #[test]
     fn usage_mentions_install_and_uninstall() {
         let usage =
-            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|telemetry|gain|version|help> [--agent all|codex|claude|cursor]";
+            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
         assert!(usage.contains("install"));
         assert!(usage.contains("uninstall"));
         assert!(usage.contains("exec"));
         assert!(usage.contains("retrieve"));
         assert!(usage.contains("cache"));
-        assert!(usage.contains("telemetry"));
+        assert!(usage.contains("session"));
         assert!(usage.contains("gain"));
         assert!(usage.contains("version"));
     }
