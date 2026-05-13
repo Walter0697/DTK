@@ -8,8 +8,10 @@ use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
     add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir, end_session,
     filtered_payload_path, init_usage_schema, install_agent_guidance, install_config_skill,
-    read_store_index, runtime_store_dir, start_session, token_count_for_path,
-    uninstall_agent_guidance, usage_db_path, AgentTarget, HookRule,
+    load_filter_config, load_hook_rules, read_store_index, remove_hook_rules_for_config,
+    resolve_config_path, runtime_store_dir, runtime_usage_dir, start_session, token_count_for_path,
+    uninstall_agent_guidance, usage_db_path, write_filter_config, AgentTarget, FilterConfig,
+    HookRule,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -206,6 +208,10 @@ fn main() -> ExitCode {
         return run_hook_command(args.collect());
     }
 
+    if command == "config" {
+        return run_config_command(args.collect());
+    }
+
     let mut explicit_target: Option<AgentTarget> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -324,11 +330,13 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
+        "Usage: dtk <install|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
     );
     eprintln!("Commands:");
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
+    eprintln!("  dtk config allow <add|remove> <config> <field>");
+    eprintln!("  dtk config delete <config>");
     eprintln!("  dtk cache <list|show> [ref_id]");
     eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");
     eprintln!("  dtk gain [--limit N]");
@@ -613,8 +621,8 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         options.limit = options.limit.or(Some(10));
     }
 
-    let store_dir = runtime_store_dir();
-    let db_path = usage_db_path(&store_dir);
+    let usage_dir = runtime_usage_dir();
+    let db_path = usage_db_path(&usage_dir);
     if !db_path.exists() {
         println!("no usage entries");
         return ExitCode::from(0);
@@ -1822,15 +1830,262 @@ fn run_hook_command(args: Vec<String>) -> ExitCode {
     }
 }
 
+fn run_config_command(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    let Some(subcommand) = args.next() else {
+        print_config_usage();
+        return ExitCode::from(2);
+    };
+
+    match subcommand.as_str() {
+        "allow" => run_config_allow_command(args.collect()),
+        "delete" | "remove" | "wipe" => run_config_delete_command(args.collect()),
+        "help" | "--help" | "-h" => {
+            print_config_usage();
+            ExitCode::from(0)
+        }
+        other => {
+            eprintln!("unknown config subcommand: {other}");
+            print_config_usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_config_allow_command(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        print_config_allow_usage();
+        return ExitCode::from(2);
+    };
+    let Some(config_identifier) = args.next() else {
+        eprintln!("missing config identifier");
+        print_config_allow_usage();
+        return ExitCode::from(2);
+    };
+    let Some(field_path) = args.next() else {
+        eprintln!("missing field path");
+        print_config_allow_usage();
+        return ExitCode::from(2);
+    };
+    if args.next().is_some() {
+        eprintln!("unexpected extra arguments");
+        print_config_allow_usage();
+        return ExitCode::from(2);
+    }
+
+    let resolved = match resolve_config_identifier(&config_identifier) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("failed to resolve config {config_identifier}: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut config = match load_filter_config(&resolved) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("failed to load config {}: {err}", resolved.display());
+            return ExitCode::from(1);
+        }
+    };
+
+    let changed = match action.as_str() {
+        "add" => add_allow_path(&mut config, &field_path),
+        "remove" | "rm" => remove_allow_path(&mut config, &field_path),
+        other => {
+            eprintln!("unknown allow action: {other}");
+            print_config_allow_usage();
+            return ExitCode::from(2);
+        }
+    };
+
+    if !changed {
+        let message = if action == "add" {
+            "allowlist already contains field"
+        } else {
+            "allowlist did not contain field"
+        };
+        println!("{message}: {} -> {}", resolved.display(), field_path.trim());
+        return ExitCode::from(0);
+    }
+
+    if let Err(err) = write_filter_config(&resolved, &config) {
+        eprintln!("failed to write config {}: {err}", resolved.display());
+        return ExitCode::from(1);
+    }
+
+    println!(
+        "updated config: {} {} {}",
+        resolved.display(),
+        if action == "add" { "added" } else { "removed" },
+        field_path.trim()
+    );
+    ExitCode::from(0)
+}
+
+fn run_config_delete_command(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    let Some(config_identifier) = args.next() else {
+        eprintln!("missing config identifier");
+        print_config_delete_usage();
+        return ExitCode::from(2);
+    };
+    if args.next().is_some() {
+        eprintln!("unexpected extra arguments");
+        print_config_delete_usage();
+        return ExitCode::from(2);
+    }
+
+    let resolved = match resolve_config_identifier(&config_identifier) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("failed to resolve config {config_identifier}: {err}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let config_key = config_key_for_hooks(&resolved);
+    let file_removed = match fs::remove_file(&resolved) {
+        Ok(()) => true,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => {
+            eprintln!("failed to delete config {}: {err}", resolved.display());
+            return ExitCode::from(1);
+        }
+    };
+    let hooks_path = default_config_dir().join("hooks.json");
+    let resolved_text = resolved.to_string_lossy().to_string();
+    let mut hooks_changed = false;
+    for key in [
+        config_identifier.as_str(),
+        config_key.as_str(),
+        resolved_text.as_str(),
+    ] {
+        match remove_hook_rules_for_config(&hooks_path, key) {
+            Ok(changed) => hooks_changed |= changed,
+            Err(err) => {
+                eprintln!("failed to update hooks: {err}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    if !file_removed && !hooks_changed {
+        println!("nothing to delete for {}", resolved.display());
+        return ExitCode::from(0);
+    }
+
+    println!(
+        "deleted config: {}{}",
+        resolved.display(),
+        if hooks_changed {
+            " (removed matching hook rules)"
+        } else {
+            ""
+        }
+    );
+    ExitCode::from(0)
+}
+
+fn print_config_usage() {
+    eprintln!("usage: dtk config <allow|delete> ...");
+    eprintln!("  dtk config allow add <config> <field>");
+    eprintln!("  dtk config allow remove <config> <field>");
+    eprintln!("  dtk config delete <config>");
+}
+
+fn print_config_allow_usage() {
+    eprintln!("usage: dtk config allow <add|remove> <config> <field>");
+}
+
+fn print_config_delete_usage() {
+    eprintln!("usage: dtk config delete <config>");
+}
+
+fn resolve_config_identifier(identifier: &str) -> io::Result<PathBuf> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "config identifier cannot be empty",
+        ));
+    }
+
+    let resolved = resolve_config_path(trimmed);
+    if resolved.exists() {
+        return Ok(resolved);
+    }
+
+    let hooks_path = default_config_dir().join("hooks.json");
+    let hooks = match load_hook_rules(&hooks_path) {
+        Ok(hooks) => hooks,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("unknown config or hook rule: {trimmed}"),
+            ))
+        }
+        Err(err) => return Err(err),
+    };
+
+    for rule in hooks.rules {
+        if rule.name.as_deref() == Some(trimmed) {
+            if let Some(config) = rule.config {
+                let resolved = resolve_config_path(config);
+                if resolved.exists() {
+                    return Ok(resolved);
+                }
+                return Ok(resolved);
+            }
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("unknown config or hook rule: {trimmed}"),
+    ))
+}
+
+fn config_key_for_hooks(path: &PathBuf) -> String {
+    if let Ok(relative) = path.strip_prefix(default_config_dir().join("configs")) {
+        return relative.to_string_lossy().to_string();
+    }
+    if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+        return name.to_string();
+    }
+    path.to_string_lossy().to_string()
+}
+
+fn add_allow_path(config: &mut FilterConfig, field_path: &str) -> bool {
+    let trimmed = field_path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if config.allow.iter().any(|existing| existing == trimmed) {
+        return false;
+    }
+    config.allow.push(trimmed.to_string());
+    true
+}
+
+fn remove_allow_path(config: &mut FilterConfig, field_path: &str) -> bool {
+    let trimmed = field_path.trim();
+    let before = config.allow.len();
+    config.allow.retain(|existing| existing != trimmed);
+    config.allow.len() != before
+}
+
 fn run_doctor(target: AgentTarget) -> ExitCode {
     let store_dir = runtime_store_dir();
+    let usage_dir = runtime_usage_dir();
 
     println!("DTK doctor");
     println!("  version: v{}", env!("CARGO_PKG_VERSION"));
     println!("  detected agent: {}", target.as_str());
     println!("  store dir: {}", store_dir.display());
+    println!("  usage dir: {}", usage_dir.display());
 
-    let checks = doctor_checks(target, &store_dir);
+    let checks = doctor_checks(target, &store_dir, &usage_dir);
     let mut failed = false;
 
     for check in checks {
@@ -1863,7 +2118,11 @@ struct DoctorCheck {
     required: bool,
 }
 
-fn doctor_checks(target: AgentTarget, store_dir: &PathBuf) -> Vec<DoctorCheck> {
+fn doctor_checks(
+    target: AgentTarget,
+    store_dir: &PathBuf,
+    usage_dir: &PathBuf,
+) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     match target {
         AgentTarget::All => {
@@ -1878,6 +2137,8 @@ fn doctor_checks(target: AgentTarget, store_dir: &PathBuf) -> Vec<DoctorCheck> {
 
     let store_ok = check_store_writable(store_dir);
     checks.push(store_ok);
+    let usage_ok = check_usage_writable(usage_dir);
+    checks.push(usage_ok);
 
     checks
 }
@@ -1888,26 +2149,41 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
         AgentTarget::Codex => {
             let guide = codex_dir().join("DTK.md");
             let skill = codex_dir().join("skills").join("dtk").join("SKILL.md");
+            let tuner = codex_dir()
+                .join("skills")
+                .join("dtk-allowlist-tuner")
+                .join("SKILL.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
+            checks.push(file_check(&tuner, false));
         }
         AgentTarget::Claude => {
             let guide = claude_dir().join("DTK.md");
             let skill = claude_dir().join("skills").join("dtk").join("SKILL.md");
+            let tuner = claude_dir()
+                .join("skills")
+                .join("dtk-allowlist-tuner")
+                .join("SKILL.md");
             let claude_md = claude_dir().join("CLAUDE.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
+            checks.push(file_check(&tuner, false));
             checks.push(file_check(&claude_md, true));
             checks.push(text_contains_check(&claude_md, "@DTK.md", true));
         }
         AgentTarget::Cursor => {
             let guide = cursor_dir().join("DTK.md");
             let skill = cursor_dir().join("skills").join("dtk").join("SKILL.md");
+            let tuner = cursor_dir()
+                .join("skills")
+                .join("dtk-allowlist-tuner")
+                .join("SKILL.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
+            checks.push(file_check(&tuner, false));
         }
         AgentTarget::All => unreachable!(),
     }
@@ -1968,6 +2244,33 @@ fn check_store_writable(store_dir: &PathBuf) -> DoctorCheck {
     }
 }
 
+fn check_usage_writable(usage_dir: &PathBuf) -> DoctorCheck {
+    let test_dir = usage_dir.join(".doctor");
+    let test_file = test_dir.join("write-test");
+    let result = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&test_dir)?;
+        std::fs::write(&test_file, b"ok")?;
+        std::fs::remove_file(&test_file)?;
+        let _ = std::fs::remove_dir(&test_dir);
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => DoctorCheck {
+            label: "usage db writable".to_string(),
+            ok: true,
+            detail: format!(" ({})", usage_dir.display()),
+            required: true,
+        },
+        Err(err) => DoctorCheck {
+            label: "usage db writable".to_string(),
+            ok: false,
+            detail: format!(" ({}: {err})", usage_dir.display()),
+            required: true,
+        },
+    }
+}
+
 fn maybe_install_skill_interactive(target: AgentTarget) {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return;
@@ -1992,7 +2295,7 @@ fn prompt_skill_install(target: AgentTarget) -> bool {
         eprintln!();
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
-                "Install DTK configuration skill for {}",
+                "Install DTK configuration skills for {}",
                 target.as_str()
             ))
             .items(["Yes", "No", "What is it?"])
@@ -2017,10 +2320,10 @@ fn prompt_skill_install(target: AgentTarget) -> bool {
 fn explain_skill(target: AgentTarget) {
     eprintln!();
     eprintln!(
-        "DTK config skill helps you configure DTK from a live curl URL, endpoint, or command."
+        "DTK installs two optional skills: one to create configs from live payloads, and one to tune an existing allowlist later."
     );
     eprintln!(
-        "It runs the source, inspects the output, asks what fields matter, and drafts config."
+        "They run the source, inspect the output, help decide what fields matter, and update the reusable config."
     );
     eprintln!(
         "For {}, it is optional guidance for interactive payload filtering setup.",
@@ -2036,7 +2339,7 @@ fn run_skill_steps(target: AgentTarget) -> ExitCode {
         let progress = ((idx * 100) / total).min(99);
         let filled = (progress * width) / 100;
         eprint!(
-            "\r\x1b[2K[{}{}] {:>3}% Installing DTK skill ({}/{})",
+            "\r\x1b[2K[{}{}] {:>3}% Installing DTK skills ({}/{})",
             "=".repeat(filled),
             " ".repeat(width.saturating_sub(filled)),
             progress,
@@ -2050,7 +2353,7 @@ fn run_skill_steps(target: AgentTarget) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    eprint!("\r\x1b[2K[{}] 100% Installing DTK skill\n", "=".repeat(24));
+    eprint!("\r\x1b[2K[{}] 100% Installing DTK skills\n", "=".repeat(24));
     let _ = io::stderr().flush();
     ExitCode::from(0)
 }
@@ -2150,6 +2453,11 @@ fn codex_artifacts_present() -> bool {
             .join("dtk")
             .join("SKILL.md")
             .exists()
+        || codex_dir()
+            .join("skills")
+            .join("dtk-allowlist-tuner")
+            .join("SKILL.md")
+            .exists()
 }
 
 fn claude_artifacts_present() -> bool {
@@ -2157,6 +2465,11 @@ fn claude_artifacts_present() -> bool {
     if base.join("DTK.md").exists()
         || base.join("hooks").join("dtk-rewrite.sh").exists()
         || base.join("skills").join("dtk").join("SKILL.md").exists()
+        || base
+            .join("skills")
+            .join("dtk-allowlist-tuner")
+            .join("SKILL.md")
+            .exists()
     {
         return true;
     }
@@ -2178,6 +2491,11 @@ fn cursor_artifacts_present() -> bool {
     if base.join("DTK.md").exists()
         || base.join("hooks").join("dtk-rewrite.sh").exists()
         || base.join("skills").join("dtk").join("SKILL.md").exists()
+        || base
+            .join("skills")
+            .join("dtk-allowlist-tuner")
+            .join("SKILL.md")
+            .exists()
     {
         return true;
     }
@@ -2225,11 +2543,12 @@ mod tests {
     #[test]
     fn usage_mentions_install_and_uninstall() {
         let usage =
-            "Usage: dtk <install|uninstall|doctor|hook|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
+            "Usage: dtk <install|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
         assert!(usage.contains("install"));
         assert!(usage.contains("uninstall"));
         assert!(usage.contains("exec"));
         assert!(usage.contains("retrieve"));
+        assert!(usage.contains("config"));
         assert!(usage.contains("cache"));
         assert!(usage.contains("session"));
         assert!(usage.contains("gain"));
@@ -2271,5 +2590,42 @@ mod tests {
     fn formats_utc_day_and_month() {
         assert_eq!(format_utc_date(0), "1970-01-01");
         assert_eq!(format_utc_month(0), "1970-01");
+    }
+
+    #[test]
+    fn add_allow_path_ignores_duplicates() {
+        let mut config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec!["users[].id".to_string()],
+        };
+
+        assert!(add_allow_path(&mut config, "users[].email"));
+        assert!(!add_allow_path(&mut config, "users[].email"));
+        assert_eq!(
+            config.allow,
+            vec!["users[].id".to_string(), "users[].email".to_string()]
+        );
+    }
+
+    #[test]
+    fn remove_allow_path_removes_exact_match() {
+        let mut config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec!["users[].id".to_string(), "users[].email".to_string()],
+        };
+
+        assert!(remove_allow_path(&mut config, "users[].email"));
+        assert!(!remove_allow_path(&mut config, "users[].email"));
+        assert_eq!(config.allow, vec!["users[].id".to_string()]);
     }
 }

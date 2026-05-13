@@ -4,9 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dtk::{
     default_store_dir, filter_json_payload_with_ref, load_filter_config, parse_json_payload,
-    record_exec_metric_issue, record_exec_metrics, resolve_config_path, runtime_store_dir,
-    store_filtered_payload, store_original_payload_with_retention, summarize_command_signature,
-    token_count_for_content, ExecMetricIssueInput, ExecMetricsInput, DEFAULT_SAMPLE_CONFIG_NAME,
+    recommendation_notices_for_exec, record_exec_metric_issue, record_exec_metrics,
+    resolve_config_path, resolve_filter_config_id, runtime_store_dir, store_filtered_payload,
+    store_original_payload_with_retention, summarize_command_signature, token_count_for_content,
+    ExecMetricIssueInput, ExecMetricsInput, DEFAULT_SAMPLE_CONFIG_NAME,
 };
 
 fn main() -> ExitCode {
@@ -81,6 +82,8 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
+        let config_id = resolve_filter_config_id(&config, &resolved_config_path);
+        let config_path_text = resolved_config_path.to_string_lossy().to_string();
 
         let store_dir = runtime_store_dir();
         let preferred_store_dir = default_store_dir();
@@ -143,6 +146,8 @@ fn main() -> ExitCode {
                 ref_id: ref_id.clone(),
                 created_at_unix_ms,
                 signature,
+                config_id: config_id.clone(),
+                config_path: config_path_text.clone(),
                 original_tokens,
                 filtered_tokens: emitted_filtered_tokens,
             };
@@ -156,6 +161,8 @@ fn main() -> ExitCode {
                     ref_id,
                     created_at_unix_ms,
                     signature: metrics.signature.clone(),
+                    config_id: config_id.clone(),
+                    config_path: config_path_text.clone(),
                     original_tokens,
                     filtered_tokens: filtered_tokens_raw,
                     issue_kind: "filtered_larger_than_original".to_string(),
@@ -163,6 +170,20 @@ fn main() -> ExitCode {
 
                 if let Err(err) = record_exec_metric_issue(&store_dir, &issue) {
                     eprintln!("failed to record usage issue: {err}");
+                }
+                match recommendation_notices_for_exec(
+                    &store_dir,
+                    &config_id,
+                    &metrics.signature.details,
+                ) {
+                    Ok(notices) => {
+                        for notice in notices {
+                            eprintln!("{notice}");
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("failed to load DTK recommendations: {err}");
+                    }
                 }
 
                 print!("{stdout_text}");

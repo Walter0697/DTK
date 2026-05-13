@@ -17,6 +17,8 @@ dtk install
 
 Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
 
+The repo is pinned to the current stable Rust toolchain via `rust-toolchain.toml`. If your local `cargo` is too old and reports that `Cargo.lock` version `4` is unsupported, run `rustup update stable && rustup default stable` and retry.
+
 After that, run a command through DTK:
 
 ```bash
@@ -96,6 +98,14 @@ If you need more fields later, use the `_dtk.ref_id` from the filtered output:
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
 
+If you decide the field should be exposed by default next time, update the config through DTK instead of editing JSON by hand:
+
+```bash
+dtk config allow add dummyjson_users.json '[].hair.color'
+dtk config allow remove dummyjson_users.json '[].hair.color'
+dtk config delete dummyjson_users.json
+```
+
 ## How DTK Works
 
 ```mermaid
@@ -124,17 +134,18 @@ DTK works as a structured routing layer, not a hard replacement for RTK.
 
 ## How to Add Configuration
 
-DTK can install an optional configuration skill during setup.
+DTK can install optional configuration skills during setup.
 
-Use it when you want DTK to turn a live `curl` request or API response into a reusable config.
+Use them when you want DTK to turn a live `curl` request or API response into a reusable config, then refine that config later without starting over.
 
-It helps by:
+They help by:
 
 - inspecting the live payload
 - asking which fields should stay visible
 - asking which fields should be hidden
 - drafting the matching DTK config
 - registering the hook rule for later reuse
+- tuning an existing config by expanding or shrinking its allowlist
 
 How to use it:
 
@@ -142,7 +153,7 @@ How to use it:
 dtk install
 ```
 
-During install, DTK asks whether you want the skill installed. Choose `Yes` if you want help building configs from live payloads. Choose `No` if you only want the binaries and will manage configs yourself.
+During install, DTK asks whether you want the skills installed. Choose `Yes` if you want help building configs from live payloads and tuning them later. Choose `No` if you only want the binaries and will manage configs yourself.
 
 The setup flow is interactive. The agent can keep refining the config by asking things like:
 
@@ -150,6 +161,12 @@ The setup flow is interactive. The agent can keep refining the config by asking 
 - which nested fields should stay visible
 - which fields should be hidden
 - whether the payload root is an object or an array
+
+After a config already exists, the allowlist-tuning skill can help with follow-up prompts like:
+
+- increase the allowlist for `dummyjson_users.json` to include user email
+- decrease the allowlist for the `n8n_workflows_list` rule and hide archived metadata
+- inspect the current filtered output, then tighten the config without recreating it
 
 Example prompt:
 
