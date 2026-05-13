@@ -11,8 +11,11 @@ It is inspired by RTK, but it solves a different problem: structured payloads, r
 
 ```bash
 ./install.sh
+./install-dev.sh
 dtk install
 ```
+
+Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
 
 After that, run a command through DTK:
 
@@ -21,6 +24,28 @@ dtk exec -- curl -sS https://dummyjson.com/users
 ```
 
 DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjson_users.json`, then uses it automatically when no explicit config is passed. It stores the original payload locally so you can recover more fields later.
+
+`dtk gain` examples:
+
+```bash
+dtk gain
+dtk gain --json
+dtk gain --group-by domain
+dtk gain --group-by command
+dtk gain --group-by details
+dtk gain --group-by signature
+dtk gain --all
+dtk gain --daily
+dtk gain --weekly
+dtk gain --monthly
+```
+
+Grouping modes:
+
+- `command` groups by executable name, like `curl` or `git`
+- `domain` groups `curl` telemetry by host, like `dummyjson.com`
+- `details` groups by the normalized full command line
+- `signature` groups by the full command, domain, and details triple
 
 Before, the payload is the full API response:
 
@@ -263,4 +288,3 @@ Branch protection and PR-only merges are configured on GitHub, not in the repo i
 ## License
 
 MIT
-

@@ -1,10 +1,12 @@
 use std::io::ErrorKind;
 use std::process::{Command, ExitCode, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use dtk::{
     default_store_dir, filter_json_payload_with_ref, load_filter_config, parse_json_payload,
-    resolve_config_path, runtime_store_dir, store_filtered_payload,
-    store_original_payload_with_retention, DEFAULT_SAMPLE_CONFIG_NAME,
+    record_exec_metrics, resolve_config_path, runtime_store_dir, store_filtered_payload,
+    store_original_payload_with_retention, summarize_command_signature, token_count_for_content,
+    ExecMetricsInput, DEFAULT_SAMPLE_CONFIG_NAME,
 };
 
 fn main() -> ExitCode {
@@ -109,18 +111,38 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         };
 
+        let filtered_text = match serde_json::to_string_pretty(&filtered) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("failed to render filtered JSON: {err}");
+                return ExitCode::from(1);
+            }
+        };
+
         if let Err(err) = store_filtered_payload(&filtered, &store_dir, &ref_id) {
             eprintln!("failed to store filtered payload: {err}");
             return ExitCode::from(1);
         }
 
-        match serde_json::to_string_pretty(&filtered) {
-            Ok(text) => println!("{text}"),
-            Err(err) => {
-                eprintln!("failed to render filtered JSON: {err}");
-                return ExitCode::from(1);
+        if let Some(signature) = summarize_command_signature(&command_args) {
+            let created_at_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0);
+            let metrics = ExecMetricsInput {
+                ref_id: ref_id.clone(),
+                created_at_unix_ms,
+                signature,
+                original_tokens: token_count_for_content(&stdout_text),
+                filtered_tokens: token_count_for_content(&filtered_text),
+            };
+
+            if let Err(err) = record_exec_metrics(&store_dir, &metrics) {
+                eprintln!("failed to record telemetry: {err}");
             }
         }
+
+        println!("{filtered_text}");
     } else {
         print!("{stdout_text}");
     }

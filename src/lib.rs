@@ -1,3 +1,4 @@
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -57,6 +58,22 @@ pub struct StoreIndexEntry {
     pub retention_days: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_unix_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandSignatureInput {
+    pub command: String,
+    pub domain: String,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecMetricsInput {
+    pub ref_id: String,
+    pub created_at_unix_ms: u128,
+    pub signature: CommandSignatureInput,
+    pub original_tokens: usize,
+    pub filtered_tokens: usize,
 }
 
 pub fn is_json_payload(text: &str) -> bool {
@@ -629,6 +646,272 @@ pub fn filtered_payload_path(store_dir: impl AsRef<Path>, ref_id: &str) -> PathB
         .as_ref()
         .join("filtered")
         .join(format!("{ref_id}.json"))
+}
+
+pub fn telemetry_db_path(store_dir: impl AsRef<Path>) -> PathBuf {
+    store_dir.as_ref().join("telemetry.sqlite3")
+}
+
+pub fn summarize_command_signature(command_args: &[String]) -> Option<CommandSignatureInput> {
+    let command = command_args.first()?.to_string();
+    let details = format_command_details(command_args);
+    let domain = if command == "curl" {
+        extract_curl_domain(command_args).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Some(CommandSignatureInput {
+        command,
+        domain,
+        details,
+    })
+}
+
+fn format_command_details(command_args: &[String]) -> String {
+    command_args
+        .iter()
+        .map(|arg| shell_quote_argument(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote_argument(arg: &str) -> String {
+    if arg.is_empty()
+        || arg.chars().any(|ch| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '\'' | '"'
+                        | '\\'
+                        | '$'
+                        | '`'
+                        | '!'
+                        | '('
+                        | ')'
+                        | '{'
+                        | '}'
+                        | '['
+                        | ']'
+                        | ';'
+                        | '&'
+                        | '|'
+                        | '<'
+                        | '>'
+                        | '*'
+                        | '?'
+                        | '~'
+                )
+        })
+    {
+        let escaped = arg.replace('\'', r#"'"'"'"#);
+        format!("'{escaped}'")
+    } else {
+        arg.to_string()
+    }
+}
+
+pub fn token_count_for_content(content: &str) -> usize {
+    let normalized = serde_json::from_str::<Value>(content)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| content.to_string());
+
+    let mut count = 0usize;
+    let mut in_word = false;
+
+    for ch in normalized.chars() {
+        if ch.is_whitespace() {
+            if in_word {
+                in_word = false;
+            }
+            continue;
+        }
+
+        if ch.is_alphanumeric() || ch == '_' {
+            if !in_word {
+                count += 1;
+                in_word = true;
+            }
+        } else {
+            if in_word {
+                in_word = false;
+            }
+            count += 1;
+        }
+    }
+
+    count
+}
+
+pub fn token_count_for_path(path: impl AsRef<Path>) -> io::Result<usize> {
+    let content = fs::read_to_string(path)?;
+    Ok(token_count_for_content(&content))
+}
+
+pub fn record_exec_metrics(
+    store_dir: impl AsRef<Path>,
+    metrics: &ExecMetricsInput,
+) -> io::Result<()> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+
+    let db_path = telemetry_db_path(store_dir);
+    let mut connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_telemetry_schema(&connection)?;
+
+    let transaction = connection.transaction().map_err(|err| {
+        io::Error::new(io::ErrorKind::Other, format!("start telemetry tx: {err}"))
+    })?;
+    let command = metrics.signature.command.as_str();
+    let domain = metrics.signature.domain.as_str();
+    let details = metrics.signature.details.as_str();
+
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO command_signatures (command, domain, details) VALUES (?1, ?2, ?3)",
+            params![command, domain, details],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert signature: {err}")))?;
+
+    let signature_id: i64 = transaction
+        .query_row(
+            "SELECT id FROM command_signatures WHERE command = ?1 AND domain = ?2 AND details = ?3",
+            params![command, domain, details],
+            |row| row.get(0),
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("resolve signature id: {err}"))
+        })?;
+
+    let created_at_unix_ms = i64::try_from(metrics.created_at_unix_ms).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+    let original_tokens = i64::try_from(metrics.original_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let filtered_tokens = i64::try_from(metrics.filtered_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "filtered_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let token_delta = original_tokens - filtered_tokens;
+    let token_delta_pct = if original_tokens > 0 {
+        (token_delta as f64 / original_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                metrics.ref_id.as_str(),
+                created_at_unix_ms,
+                signature_id,
+                original_tokens,
+                filtered_tokens,
+                token_delta,
+                token_delta_pct,
+            ],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert exec metrics: {err}")))?;
+
+    transaction.commit().map_err(|err| {
+        io::Error::new(io::ErrorKind::Other, format!("commit telemetry tx: {err}"))
+    })?;
+
+    Ok(())
+}
+
+fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS command_signatures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL,
+                UNIQUE(command, domain, details)
+            );
+
+            CREATE TABLE IF NOT EXISTS exec_metrics (
+                ref_id TEXT PRIMARY KEY,
+                created_at_unix_ms INTEGER NOT NULL,
+                signature_id INTEGER NOT NULL,
+                original_tokens INTEGER NOT NULL,
+                filtered_tokens INTEGER NOT NULL,
+                token_delta INTEGER NOT NULL,
+                token_delta_pct REAL NOT NULL,
+                FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_exec_metrics_created_at_unix_ms
+                ON exec_metrics(created_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_exec_metrics_signature_id
+                ON exec_metrics(signature_id);
+            "#,
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("create telemetry schema: {err}"),
+            )
+        })
+}
+
+fn extract_curl_domain(command_args: &[String]) -> Option<String> {
+    let mut iter = command_args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--url" {
+            if let Some(url) = iter.next() {
+                if let Some(domain) = domain_from_url(url) {
+                    return Some(domain);
+                }
+            }
+            continue;
+        }
+
+        if let Some(domain) = domain_from_url(arg) {
+            return Some(domain);
+        }
+    }
+
+    None
+}
+
+fn domain_from_url(value: &str) -> Option<String> {
+    let remainder = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+
+    let host_port = remainder.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host_port.rsplit('@').next().unwrap_or(host_port);
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value> {
@@ -1570,9 +1853,10 @@ mod tests {
     use super::{
         cleanup_expired_payloads, collect_field_paths, default_store_dir, filter_json_payload,
         filter_json_payload_with_metadata, is_json_payload, parse_json_payload, platform_data_dir,
-        preview_expired_payloads, recover_original_payload, retrieve_json_payload,
-        retrieve_original_payload, runtime_store_dir, stable_ref_id, store_original_payload,
-        store_original_payload_with_retention, windows_data_dir, xdg_data_dir, FilterConfig,
+        preview_expired_payloads, record_exec_metrics, recover_original_payload,
+        retrieve_json_payload, retrieve_original_payload, runtime_store_dir, stable_ref_id,
+        store_original_payload, store_original_payload_with_retention, summarize_command_signature,
+        telemetry_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -1887,6 +2171,85 @@ mod tests {
         let right = stable_ref_id(r#"{"a":1,"b":2}"#).expect("expected ref id");
         assert_eq!(left, right);
         assert!(left.starts_with("dtk_"));
+    }
+
+    #[test]
+    fn summarizes_curl_command_with_domain() {
+        let args = vec![
+            "curl".to_string(),
+            "-sS".to_string(),
+            "https://dummyjson.com/users".to_string(),
+        ];
+
+        let signature = summarize_command_signature(&args).expect("expected signature");
+
+        assert_eq!(signature.command, "curl");
+        assert_eq!(signature.domain, "dummyjson.com");
+        assert_eq!(signature.details, "curl -sS https://dummyjson.com/users");
+    }
+
+    #[test]
+    fn summarizes_non_network_command_without_domain() {
+        let args = vec!["git".to_string(), "status".to_string()];
+
+        let signature = summarize_command_signature(&args).expect("expected signature");
+
+        assert_eq!(signature.command, "git");
+        assert_eq!(signature.domain, "");
+        assert_eq!(signature.details, "git status");
+    }
+
+    #[test]
+    fn records_exec_metrics_with_deduplicated_signatures() {
+        let store_dir = temp_store_dir("unit-test-telemetry");
+        let first = ExecMetricsInput {
+            ref_id: "dtk_abc_1".to_string(),
+            created_at_unix_ms: 1_715_520_000_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 120,
+            filtered_tokens: 30,
+        };
+        let second = ExecMetricsInput {
+            ref_id: "dtk_abc_2".to_string(),
+            created_at_unix_ms: 1_715_520_100_000,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            original_tokens: 220,
+            filtered_tokens: 40,
+        };
+
+        record_exec_metrics(&store_dir, &first).expect("expected telemetry write");
+        record_exec_metrics(&store_dir, &second).expect("expected telemetry write");
+
+        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
+            .expect("expected telemetry db");
+        let signature_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM command_signatures", [], |row| {
+                row.get(0)
+            })
+            .expect("expected signature count");
+        let metric_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM exec_metrics", [], |row| row.get(0))
+            .expect("expected metric count");
+        let domain: String = connection
+            .query_row("SELECT domain FROM command_signatures LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("expected domain");
+
+        assert_eq!(signature_count, 1);
+        assert_eq!(metric_count, 2);
+        assert_eq!(domain, "dummyjson.com");
+        let _ = std::fs::remove_dir_all(store_dir);
     }
 
     #[test]
