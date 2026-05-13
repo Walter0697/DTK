@@ -7,9 +7,9 @@ use std::process::{Command, ExitCode};
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
     add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir, end_session,
-    filtered_payload_path, init_telemetry_schema, install_agent_guidance, install_config_skill,
-    read_store_index, runtime_store_dir, start_session, telemetry_db_path, token_count_for_path,
-    uninstall_agent_guidance, AgentTarget, HookRule,
+    filtered_payload_path, init_usage_schema, install_agent_guidance, install_config_skill,
+    read_store_index, runtime_store_dir, start_session, token_count_for_path,
+    uninstall_agent_guidance, usage_db_path, AgentTarget, HookRule,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -55,7 +55,7 @@ impl GainGroupBy {
 }
 
 #[derive(Debug, Clone)]
-struct TelemetryRecord {
+struct UsageRecord {
     created_at_unix_ms: i64,
     command: String,
     domain: String,
@@ -570,28 +570,28 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
     }
 
     let store_dir = runtime_store_dir();
-    let db_path = telemetry_db_path(&store_dir);
+    let db_path = usage_db_path(&store_dir);
     if !db_path.exists() {
-        println!("no telemetry entries");
+        println!("no usage entries");
         return ExitCode::from(0);
     }
 
     let connection = match Connection::open(&db_path) {
         Ok(connection) => connection,
         Err(err) => {
-            eprintln!("failed to open telemetry db: {err}");
+            eprintln!("failed to open usage db: {err}");
             return ExitCode::from(1);
         }
     };
-    if let Err(err) = init_telemetry_schema(&connection) {
-        eprintln!("failed to initialize telemetry db: {err}");
+    if let Err(err) = init_usage_schema(&connection) {
+        eprintln!("failed to initialize usage db: {err}");
         return ExitCode::from(1);
     }
 
-    let records = match load_telemetry_records(&connection) {
+    let records = match load_usage_records(&connection) {
         Ok(records) => records,
         Err(err) => {
-            eprintln!("failed to read telemetry data: {err}");
+            eprintln!("failed to read usage data: {err}");
             return ExitCode::from(1);
         }
     };
@@ -606,14 +606,14 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
     };
 
     if records.is_empty() {
-        println!("no telemetry entries");
+        println!("no usage entries");
         return ExitCode::from(0);
     }
 
-    let summary = summarize_telemetry(&records);
+    let summary = summarize_usage(&records);
     let color_enabled = supports_color();
 
-    let group_rows = group_telemetry_rows(&records, options.group_by);
+    let group_rows = group_usage_rows(&records, options.group_by);
     let group_rows = if options.all {
         group_rows
     } else if let Some(limit) = options.limit {
@@ -629,17 +629,17 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             summary: summary.clone(),
             groups: group_rows.iter().map(group_row_to_json).collect(),
             daily: if options.all || options.daily {
-                Some(period_telemetry_rows(&records, GainPeriodKind::Daily))
+                Some(period_usage_rows(&records, GainPeriodKind::Daily))
             } else {
                 None
             },
             weekly: if options.all || options.weekly {
-                Some(period_telemetry_rows(&records, GainPeriodKind::Weekly))
+                Some(period_usage_rows(&records, GainPeriodKind::Weekly))
             } else {
                 None
             },
             monthly: if options.all || options.monthly {
-                Some(period_telemetry_rows(&records, GainPeriodKind::Monthly))
+                Some(period_usage_rows(&records, GainPeriodKind::Monthly))
             } else {
                 None
             },
@@ -648,7 +648,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         match serde_json::to_string_pretty(&report) {
             Ok(text) => println!("{text}"),
             Err(err) => {
-                eprintln!("failed to render telemetry json: {err}");
+                eprintln!("failed to render usage json: {err}");
                 return ExitCode::from(1);
             }
         }
@@ -661,7 +661,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             print_period_section(
                 "Daily Breakdown",
                 "Date",
-                &period_telemetry_rows(&records, GainPeriodKind::Daily),
+                &period_usage_rows(&records, GainPeriodKind::Daily),
             );
             println!();
         }
@@ -669,7 +669,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             print_period_section(
                 "Weekly Breakdown",
                 "Week",
-                &period_telemetry_rows(&records, GainPeriodKind::Weekly),
+                &period_usage_rows(&records, GainPeriodKind::Weekly),
             );
             println!();
         }
@@ -677,7 +677,7 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
             print_period_section(
                 "Monthly Breakdown",
                 "Month",
-                &period_telemetry_rows(&records, GainPeriodKind::Monthly),
+                &period_usage_rows(&records, GainPeriodKind::Monthly),
             );
         }
         return ExitCode::from(0);
@@ -696,19 +696,19 @@ fn run_gain_command(args: Vec<String>) -> ExitCode {
         print_period_section(
             "Daily Breakdown",
             "Date",
-            &period_telemetry_rows(&records, GainPeriodKind::Daily),
+            &period_usage_rows(&records, GainPeriodKind::Daily),
         );
         println!();
         print_period_section(
             "Weekly Breakdown",
             "Week",
-            &period_telemetry_rows(&records, GainPeriodKind::Weekly),
+            &period_usage_rows(&records, GainPeriodKind::Weekly),
         );
         println!();
         print_period_section(
             "Monthly Breakdown",
             "Month",
-            &period_telemetry_rows(&records, GainPeriodKind::Monthly),
+            &period_usage_rows(&records, GainPeriodKind::Monthly),
         );
     }
 
@@ -1074,7 +1074,7 @@ fn print_gain_table(rows: &[GainRow], group_by: GainGroupBy, color_enabled: bool
     println!("{}", "─".repeat(table_width));
 }
 
-fn load_telemetry_records(connection: &Connection) -> io::Result<Vec<TelemetryRecord>> {
+fn load_usage_records(connection: &Connection) -> io::Result<Vec<UsageRecord>> {
     let mut statement = connection
         .prepare(
             "SELECT em.created_at_unix_ms, cs.command, cs.domain, cs.details, em.ticket_id, em.original_tokens, em.filtered_tokens, em.token_delta
@@ -1082,11 +1082,11 @@ fn load_telemetry_records(connection: &Connection) -> io::Result<Vec<TelemetryRe
              JOIN command_signatures cs ON cs.id = em.signature_id
              ORDER BY em.created_at_unix_ms ASC, em.ref_id ASC",
         )
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("prepare telemetry query: {err}")))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("prepare usage query: {err}")))?;
 
     let rows = statement
         .query_map([], |row| {
-            Ok(TelemetryRecord {
+            Ok(UsageRecord {
                 created_at_unix_ms: row.get(0)?,
                 command: row.get(1)?,
                 domain: row.get(2)?,
@@ -1097,21 +1097,19 @@ fn load_telemetry_records(connection: &Connection) -> io::Result<Vec<TelemetryRe
                 token_delta: row.get(7)?,
             })
         })
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("query telemetry rows: {err}"))
-        })?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("query usage rows: {err}")))?;
 
     let mut records = Vec::new();
     for row in rows {
         records.push(row.map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("read telemetry row: {err}"))
+            io::Error::new(io::ErrorKind::Other, format!("read usage row: {err}"))
         })?);
     }
 
     Ok(records)
 }
 
-fn summarize_telemetry(records: &[TelemetryRecord]) -> GainSummaryJson {
+fn summarize_usage(records: &[UsageRecord]) -> GainSummaryJson {
     let runs = records.len() as i64;
     let original_tokens = records.iter().map(|row| row.original_tokens).sum::<i64>();
     let filtered_tokens = records.iter().map(|row| row.filtered_tokens).sum::<i64>();
@@ -1131,7 +1129,7 @@ fn summarize_telemetry(records: &[TelemetryRecord]) -> GainSummaryJson {
     }
 }
 
-fn group_telemetry_rows(records: &[TelemetryRecord], group_by: GainGroupBy) -> Vec<GainRow> {
+fn group_usage_rows(records: &[UsageRecord], group_by: GainGroupBy) -> Vec<GainRow> {
     let mut groups: BTreeMap<String, GainRow> = BTreeMap::new();
 
     for record in records {
@@ -1220,7 +1218,7 @@ fn group_row_to_json(row: &GainRow) -> GainGroupJson {
     }
 }
 
-fn period_telemetry_rows(records: &[TelemetryRecord], kind: GainPeriodKind) -> Vec<GainPeriodJson> {
+fn period_usage_rows(records: &[UsageRecord], kind: GainPeriodKind) -> Vec<GainPeriodJson> {
     let mut groups: BTreeMap<String, GainPeriodJson> = BTreeMap::new();
 
     for record in records {
@@ -2031,9 +2029,9 @@ mod tests {
     }
 
     #[test]
-    fn groups_telemetry_by_domain() {
+    fn groups_usage_by_domain() {
         let records = vec![
-            TelemetryRecord {
+            UsageRecord {
                 created_at_unix_ms: 1_715_520_000_000,
                 command: "curl".to_string(),
                 domain: "dummyjson.com".to_string(),
@@ -2043,7 +2041,7 @@ mod tests {
                 filtered_tokens: 25,
                 token_delta: 75,
             },
-            TelemetryRecord {
+            UsageRecord {
                 created_at_unix_ms: 1_715_520_100_000,
                 command: "git".to_string(),
                 domain: String::new(),
@@ -2055,7 +2053,7 @@ mod tests {
             },
         ];
 
-        let grouped = group_telemetry_rows(&records, GainGroupBy::Domain);
+        let grouped = group_usage_rows(&records, GainGroupBy::Domain);
         assert_eq!(grouped.len(), 2);
         assert_eq!(grouped[0].domain.as_deref(), Some("dummyjson.com"));
         assert_eq!(grouped[0].runs, 1);

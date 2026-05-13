@@ -268,7 +268,7 @@ dtk gain --monthly
 Grouping modes:
 
 - `command` groups by executable name, like `curl` or `git`
-- `domain` groups `curl` telemetry by host, like `dummyjson.com`
+- `domain` groups `curl` usage by host, like `dummyjson.com`
 - `details` groups by the normalized full command line
 - `signature` groups by the full command, domain, and details triple
 - `ticket-id` filters the report to one session ticket

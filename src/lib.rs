@@ -16,7 +16,7 @@ const DTK_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static TELEMETRY_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct FilterConfig {
     #[serde(default)]
@@ -75,6 +75,16 @@ pub struct ExecMetricsInput {
     pub signature: CommandSignatureInput,
     pub original_tokens: usize,
     pub filtered_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecMetricIssueInput {
+    pub ref_id: String,
+    pub created_at_unix_ms: u128,
+    pub signature: CommandSignatureInput,
+    pub original_tokens: usize,
+    pub filtered_tokens: usize,
+    pub issue_kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -657,8 +667,8 @@ pub fn filtered_payload_path(store_dir: impl AsRef<Path>, ref_id: &str) -> PathB
         .join(format!("{ref_id}.json"))
 }
 
-pub fn telemetry_db_path(store_dir: impl AsRef<Path>) -> PathBuf {
-    store_dir.as_ref().join("telemetry.sqlite3")
+pub fn usage_db_path(store_dir: impl AsRef<Path>) -> PathBuf {
+    store_dir.as_ref().join("usage.sqlite3")
 }
 
 pub fn summarize_command_signature(command_args: &[String]) -> Option<CommandSignatureInput> {
@@ -764,21 +774,20 @@ pub fn record_exec_metrics(
 ) -> io::Result<()> {
     let store_dir = store_dir.as_ref();
     fs::create_dir_all(store_dir)?;
-
-    let db_path = telemetry_db_path(store_dir);
+    let db_path = usage_db_path(store_dir);
     let mut connection = Connection::open(db_path)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(|err| {
             io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
         })?;
-    init_telemetry_schema(&connection)?;
+    init_usage_schema(&connection)?;
     let active_session = active_session(&connection)?;
 
-    let transaction = connection.transaction().map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("start telemetry tx: {err}"))
-    })?;
+    let transaction = connection
+        .transaction()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start usage tx: {err}")))?;
     let command = metrics.signature.command.as_str();
     let domain = metrics.signature.domain.as_str();
     let details = metrics.signature.details.as_str();
@@ -824,7 +833,7 @@ pub fn record_exec_metrics(
     } else {
         0.0
     };
-    let telemetry_session_id = active_session.as_ref().map(|session| session.id);
+    let session_id = active_session.as_ref().map(|session| session.id);
     let ticket_id = active_session
         .as_ref()
         .map(|session| session.ticket_id.as_str())
@@ -832,12 +841,12 @@ pub fn record_exec_metrics(
 
     transaction
         .execute(
-            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, telemetry_session_id, ticket_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 metrics.ref_id.as_str(),
                 created_at_unix_ms,
                 signature_id,
-                telemetry_session_id,
+                session_id,
                 ticket_id,
                 original_tokens,
                 filtered_tokens,
@@ -847,9 +856,105 @@ pub fn record_exec_metrics(
         )
         .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert exec metrics: {err}")))?;
 
-    transaction.commit().map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("commit telemetry tx: {err}"))
+    transaction
+        .commit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("commit usage tx: {err}")))?;
+
+    Ok(())
+}
+
+pub fn record_exec_metric_issue(
+    store_dir: impl AsRef<Path>,
+    issue: &ExecMetricIssueInput,
+) -> io::Result<()> {
+    let store_dir = store_dir.as_ref();
+    fs::create_dir_all(store_dir)?;
+    let db_path = usage_db_path(store_dir);
+    let mut connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+    let active_session = active_session(&connection)?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start usage tx: {err}")))?;
+    let command = issue.signature.command.as_str();
+    let domain = issue.signature.domain.as_str();
+    let details = issue.signature.details.as_str();
+
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO command_signatures (command, domain, details) VALUES (?1, ?2, ?3)",
+            params![command, domain, details],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert signature: {err}")))?;
+
+    let signature_id: i64 = transaction
+        .query_row(
+            "SELECT id FROM command_signatures WHERE command = ?1 AND domain = ?2 AND details = ?3",
+            params![command, domain, details],
+            |row| row.get(0),
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("resolve signature id: {err}"))
+        })?;
+
+    let created_at_unix_ms = i64::try_from(issue.created_at_unix_ms).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created_at_unix_ms does not fit into sqlite INTEGER",
+        )
     })?;
+    let original_tokens = i64::try_from(issue.original_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let filtered_tokens = i64::try_from(issue.filtered_tokens).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "filtered_tokens does not fit into sqlite INTEGER",
+        )
+    })?;
+    let token_delta = original_tokens - filtered_tokens;
+    let token_delta_pct = if original_tokens > 0 {
+        (token_delta as f64 / original_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+    let session_id = active_session.as_ref().map(|session| session.id);
+    let ticket_id = active_session
+        .as_ref()
+        .map(|session| session.ticket_id.as_str())
+        .unwrap_or("");
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO exec_metric_issues (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, issue_kind, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                issue.ref_id.as_str(),
+                created_at_unix_ms,
+                signature_id,
+                session_id,
+                ticket_id,
+                issue.issue_kind.as_str(),
+                original_tokens,
+                filtered_tokens,
+                token_delta,
+                token_delta_pct,
+            ],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert exec metric issue: {err}")))?;
+
+    transaction
+        .commit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("commit usage tx: {err}")))?;
 
     Ok(())
 }
@@ -860,21 +965,20 @@ pub fn start_session(
 ) -> io::Result<SessionRecord> {
     let store_dir = store_dir.as_ref();
     fs::create_dir_all(store_dir)?;
-
-    let db_path = telemetry_db_path(store_dir);
+    let db_path = usage_db_path(store_dir);
     let connection = Connection::open(db_path)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(|err| {
             io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
         })?;
-    init_telemetry_schema(&connection)?;
+    init_usage_schema(&connection)?;
 
     if let Some(active) = active_session(&connection)? {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("telemetry already active for ticketId {}", active.ticket_id),
+            format!("session already active for ticketId {}", active.ticket_id),
         ));
     }
 
@@ -889,7 +993,7 @@ pub fn start_session(
             }
             value.to_string()
         }
-        None => generate_telemetry_ticket_id(),
+        None => generate_session_ticket_id(),
     };
 
     let started_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
@@ -901,15 +1005,10 @@ pub fn start_session(
 
     connection
         .execute(
-            "INSERT INTO telemetry_sessions (ticket_id, started_at_unix_ms) VALUES (?1, ?2)",
+            "INSERT INTO sessions (ticket_id, started_at_unix_ms) VALUES (?1, ?2)",
             params![ticket_id.as_str(), started_at_unix_ms],
         )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("start telemetry session: {err}"),
-            )
-        })?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("start session: {err}")))?;
 
     let id = connection.last_insert_rowid();
     Ok(SessionRecord {
@@ -922,21 +1021,18 @@ pub fn start_session(
 
 pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
     let store_dir = store_dir.as_ref();
-    let db_path = telemetry_db_path(store_dir);
+    let db_path = usage_db_path(store_dir);
     let connection = Connection::open(db_path)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open telemetry db: {err}")))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(|err| {
             io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
         })?;
-    init_telemetry_schema(&connection)?;
+    init_usage_schema(&connection)?;
 
     let Some(active) = active_session(&connection)? else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no active telemetry session",
-        ));
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no active session"));
     };
 
     let ended_at_unix_ms = i64::try_from(now_unix_ms()).map_err(|_| {
@@ -948,15 +1044,10 @@ pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
 
     connection
         .execute(
-            "UPDATE telemetry_sessions SET ended_at_unix_ms = ?1 WHERE id = ?2",
+            "UPDATE sessions SET ended_at_unix_ms = ?1 WHERE id = ?2",
             params![ended_at_unix_ms, active.id],
         )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("end telemetry session: {err}"),
-            )
-        })?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("end session: {err}")))?;
 
     Ok(SessionRecord {
         ended_at_unix_ms: Some(ended_at_unix_ms),
@@ -964,7 +1055,7 @@ pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
     })
 }
 
-pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
+pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
     connection
         .execute_batch(
             r#"
@@ -980,7 +1071,7 @@ pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 ref_id TEXT PRIMARY KEY,
                 created_at_unix_ms INTEGER NOT NULL,
                 signature_id INTEGER NOT NULL,
-                telemetry_session_id INTEGER,
+                session_id INTEGER,
                 ticket_id TEXT NOT NULL DEFAULT '',
                 original_tokens INTEGER NOT NULL,
                 filtered_tokens INTEGER NOT NULL,
@@ -989,7 +1080,21 @@ pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
             );
 
-            CREATE TABLE IF NOT EXISTS telemetry_sessions (
+            CREATE TABLE IF NOT EXISTS exec_metric_issues (
+                ref_id TEXT PRIMARY KEY,
+                created_at_unix_ms INTEGER NOT NULL,
+                signature_id INTEGER NOT NULL,
+                session_id INTEGER,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                issue_kind TEXT NOT NULL,
+                original_tokens INTEGER NOT NULL,
+                filtered_tokens INTEGER NOT NULL,
+                token_delta INTEGER NOT NULL,
+                token_delta_pct REAL NOT NULL,
+                FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_id TEXT NOT NULL,
                 started_at_unix_ms INTEGER NOT NULL,
@@ -1000,27 +1105,36 @@ pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
                 ON exec_metrics(created_at_unix_ms);
             CREATE INDEX IF NOT EXISTS idx_exec_metrics_signature_id
                 ON exec_metrics(signature_id);
-            CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_active
-                ON telemetry_sessions(ended_at_unix_ms, started_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_created_at_unix_ms
+                ON exec_metric_issues(created_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_signature_id
+                ON exec_metric_issues(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_active
+                ON sessions(ended_at_unix_ms, started_at_unix_ms);
             "#,
         )
         .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("create telemetry schema: {err}"),
-            )
+            io::Error::new(io::ErrorKind::Other, format!("create usage schema: {err}"))
         })?;
 
-    ensure_telemetry_column(
-        connection,
-        "exec_metrics",
-        "telemetry_session_id",
-        "INTEGER",
-    )?;
-    ensure_telemetry_column(
+    ensure_usage_column(connection, "exec_metrics", "session_id", "INTEGER")?;
+    ensure_usage_column(
         connection,
         "exec_metrics",
         "ticket_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_usage_column(connection, "exec_metric_issues", "session_id", "INTEGER")?;
+    ensure_usage_column(
+        connection,
+        "exec_metric_issues",
+        "ticket_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_usage_column(
+        connection,
+        "exec_metric_issues",
+        "issue_kind",
         "TEXT NOT NULL DEFAULT ''",
     )?;
     connection
@@ -1029,61 +1143,52 @@ pub fn init_telemetry_schema(connection: &Connection) -> io::Result<()> {
             [],
         )
         .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("create telemetry index: {err}"),
-            )
+            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
+        })?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_ticket_id ON exec_metric_issues(ticket_id)",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
         })?;
 
     Ok(())
 }
 
-fn ensure_telemetry_column(
+fn ensure_usage_column(
     connection: &Connection,
     table: &str,
     column: &str,
     column_definition: &str,
 ) -> io::Result<()> {
-    if telemetry_column_exists(connection, table, column)? {
+    if usage_column_exists(connection, table, column)? {
         return Ok(());
     }
 
     let statement = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
     connection.execute(&statement, []).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("migrate telemetry schema: {err}"),
-        )
+        io::Error::new(io::ErrorKind::Other, format!("migrate usage schema: {err}"))
     })?;
     Ok(())
 }
 
-fn telemetry_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
+fn usage_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
     let mut statement = connection
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("inspect telemetry schema: {err}"),
-            )
+            io::Error::new(io::ErrorKind::Other, format!("inspect usage schema: {err}"))
         })?;
     let mut rows = statement.query([]).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("query telemetry schema: {err}"),
-        )
+        io::Error::new(io::ErrorKind::Other, format!("query usage schema: {err}"))
     })?;
-    while let Some(row) = rows.next().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("read telemetry schema: {err}"),
-        )
-    })? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema: {err}")))?
+    {
         let name: String = row.get(1).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("read telemetry column: {err}"),
-            )
+            io::Error::new(io::ErrorKind::Other, format!("read usage column: {err}"))
         })?;
         if name == column {
             return Ok(true);
@@ -1096,7 +1201,7 @@ fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> 
     let mut statement = connection
         .prepare(
             "SELECT id, ticket_id, started_at_unix_ms, ended_at_unix_ms
-             FROM telemetry_sessions
+             FROM sessions
              WHERE ended_at_unix_ms IS NULL
              ORDER BY started_at_unix_ms DESC, id DESC
              LIMIT 1",
@@ -1104,7 +1209,7 @@ fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> 
         .map_err(|err| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("prepare telemetry session query: {err}"),
+                format!("prepare session query: {err}"),
             )
         })?;
 
@@ -1122,14 +1227,14 @@ fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> 
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(err) => Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("read telemetry session: {err}"),
+            format!("read session: {err}"),
         )),
     }
 }
 
-fn generate_telemetry_ticket_id() -> String {
-    let sequence = TELEMETRY_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("dtk-tele-{:x}-{sequence}", now_unix_ms())
+fn generate_session_ticket_id() -> String {
+    let sequence = SESSION_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("dtk-sess-{:x}-{sequence}", now_unix_ms())
 }
 
 fn extract_curl_domain(command_args: &[String]) -> Option<String> {
@@ -1251,6 +1356,7 @@ enum PathSegment {
     Key(String),
     AnyIndex,
     Index(usize),
+    AnyDescendant,
 }
 
 #[derive(Debug, Clone)]
@@ -1265,6 +1371,11 @@ impl PathPattern {
         for part in pattern.split('.') {
             if part.is_empty() {
                 continue;
+            }
+
+            if part == "**" {
+                segments.push(PathSegment::AnyDescendant);
+                break;
             }
 
             let mut remainder = part;
@@ -1312,20 +1423,44 @@ impl PathPattern {
     }
 
     fn matches_exact(&self, path: &[PathSegment]) -> bool {
-        self.segments.len() == path.len()
-            && self
-                .segments
-                .iter()
-                .zip(path.iter())
-                .all(|(pattern, actual)| segment_matches(pattern, actual))
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                self.segments.len() == path.len()
+                    && self
+                        .segments
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+        }
     }
 
     fn path_is_prefix(&self, path: &[PathSegment]) -> bool {
-        path.len() <= self.segments.len()
-            && path
-                .iter()
-                .zip(self.segments.iter())
-                .all(|(actual, pattern)| segment_matches(pattern, actual))
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                path.len() <= self.segments.len()
+                    && path
+                        .iter()
+                        .zip(self.segments.iter())
+                        .all(|(actual, pattern)| segment_matches(pattern, actual))
+            }
+        }
     }
 }
 
@@ -1333,6 +1468,7 @@ fn segment_matches(pattern: &PathSegment, actual: &PathSegment) -> bool {
     match (pattern, actual) {
         (PathSegment::AnyIndex, PathSegment::AnyIndex) => true,
         (PathSegment::AnyIndex, PathSegment::Index(_)) => true,
+        (PathSegment::AnyDescendant, _) => true,
         (PathSegment::Index(left), PathSegment::Index(right)) => left == right,
         (PathSegment::Key(left), PathSegment::Key(right)) => left == right,
         _ => false,
@@ -1431,6 +1567,12 @@ fn render_field_path(path: &[PathSegment]) -> String {
                 out.push('[');
                 out.push_str(&index.to_string());
                 out.push(']');
+            }
+            PathSegment::AnyDescendant => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str("**");
             }
         }
     }
@@ -2114,7 +2256,7 @@ mod tests {
         parse_json_payload, platform_data_dir, preview_expired_payloads, record_exec_metrics,
         recover_original_payload, retrieve_json_payload, retrieve_original_payload,
         runtime_store_dir, stable_ref_id, start_session, store_original_payload,
-        store_original_payload_with_retention, summarize_command_signature, telemetry_db_path,
+        store_original_payload_with_retention, summarize_command_signature, usage_db_path,
         windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
     };
 
@@ -2425,6 +2567,35 @@ mod tests {
     }
 
     #[test]
+    fn filters_wildcard_subtree_for_dynamic_object_keys() {
+        let value = parse_json_payload(
+            r#"{"connections":{"Alpha":{"main":[[{"node":"A"}]]},"Beta":{"ai_tool":[[{"node":"B"}]]}},"name":"wf"}"#,
+        )
+        .expect("expected structured json");
+
+        let config = FilterConfig {
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec!["connections.**".to_string()],
+        };
+
+        let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
+
+        assert_eq!(
+            filtered,
+            serde_json::json!({
+                "connections": {
+                    "Alpha": {"main": [[{"node": "A"}]]},
+                    "Beta": {"ai_tool": [[{"node": "B"}]]}
+                }
+            })
+        );
+    }
+
+    #[test]
     fn stable_ref_id_is_deterministic() {
         let left = stable_ref_id(r#"{"a":1,"b":2}"#).expect("expected ref id");
         let right = stable_ref_id(r#"{"a":1,"b":2}"#).expect("expected ref id");
@@ -2460,7 +2631,7 @@ mod tests {
 
     #[test]
     fn records_exec_metrics_with_deduplicated_signatures() {
-        let store_dir = temp_store_dir("unit-test-telemetry");
+        let store_dir = temp_store_dir("unit-test-usage");
         let first = ExecMetricsInput {
             ref_id: "dtk_abc_1".to_string(),
             created_at_unix_ms: 1_715_520_000_000,
@@ -2486,11 +2657,11 @@ mod tests {
             filtered_tokens: 40,
         };
 
-        record_exec_metrics(&store_dir, &first).expect("expected telemetry write");
-        record_exec_metrics(&store_dir, &second).expect("expected telemetry write");
+        record_exec_metrics(&store_dir, &first).expect("expected usage write");
+        record_exec_metrics(&store_dir, &second).expect("expected usage write");
 
-        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
-            .expect("expected telemetry db");
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
         let signature_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM command_signatures", [], |row| {
                 row.get(0)
@@ -2513,10 +2684,10 @@ mod tests {
 
     #[test]
     fn start_and_end_session_round_trip() {
-        let store_dir = temp_store_dir("unit-test-telemetry-session");
+        let store_dir = temp_store_dir("unit-test-usage-session");
 
         let started = start_session(&store_dir, None).expect("expected session start");
-        assert!(started.ticket_id.starts_with("dtk-tele-"));
+        assert!(started.ticket_id.starts_with("dtk-sess-"));
         assert!(started.ended_at_unix_ms.is_none());
 
         let ended = end_session(&store_dir).expect("expected session end");
@@ -2524,16 +2695,14 @@ mod tests {
         assert_eq!(ended.ticket_id, started.ticket_id);
         assert!(ended.ended_at_unix_ms.is_some());
 
-        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
-            .expect("expected telemetry db");
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
         let session_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM telemetry_sessions", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .expect("expected session count");
         let active_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM telemetry_sessions WHERE ended_at_unix_ms IS NULL",
+                "SELECT COUNT(*) FROM sessions WHERE ended_at_unix_ms IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -2546,7 +2715,7 @@ mod tests {
 
     #[test]
     fn records_exec_metrics_with_active_ticket_id() {
-        let store_dir = temp_store_dir("unit-test-telemetry-ticket");
+        let store_dir = temp_store_dir("unit-test-usage-ticket");
         let session = start_session(&store_dir, Some("ticket-123".to_string())).expect("start");
         assert_eq!(session.ticket_id, "ticket-123");
 
@@ -2563,10 +2732,10 @@ mod tests {
             filtered_tokens: 50,
         };
 
-        record_exec_metrics(&store_dir, &metrics).expect("expected telemetry write");
+        record_exec_metrics(&store_dir, &metrics).expect("expected usage write");
 
-        let connection = rusqlite::Connection::open(telemetry_db_path(&store_dir))
-            .expect("expected telemetry db");
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
         let ticket_id: String = connection
             .query_row(
                 "SELECT ticket_id FROM exec_metrics WHERE ref_id = ?1",
@@ -2574,16 +2743,16 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("expected ticket id");
-        let telemetry_session_id: i64 = connection
+        let session_id: i64 = connection
             .query_row(
-                "SELECT telemetry_session_id FROM exec_metrics WHERE ref_id = ?1",
+                "SELECT session_id FROM exec_metrics WHERE ref_id = ?1",
                 ["dtk_abc_3"],
                 |row| row.get(0),
             )
-            .expect("expected telemetry session id");
+            .expect("expected session id");
 
         assert_eq!(ticket_id, "ticket-123");
-        assert_eq!(telemetry_session_id, session.id);
+        assert_eq!(session_id, session.id);
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
