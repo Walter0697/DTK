@@ -1630,7 +1630,7 @@ pub fn recommendation_notices_for_retrieve(
             continue;
         }
         notices.push(format!(
-            "DTK recommendation: ask the user whether to add `{field_path}` to config `{}`. This field has been requested repeatedly for the same endpoint.",
+            "DTK recommendation: ask the user whether to add `{field_path}` to config `{}`. If they agree, run `dtk config list` to confirm the target config id, then `dtk config allow add <config> <field>`. This field has been requested repeatedly for the same endpoint.",
             recommendation.config_id
         ));
     }
@@ -1654,10 +1654,10 @@ pub fn recommendation_notices_for_exec(
         }
         match recommendation.recommendation_kind.as_str() {
             "tighten_allowlist" => notices.push(format!(
-                "DTK recommendation: ask the user whether to tighten config `{config_id}`. DTK is falling back repeatedly for this endpoint."
+                "DTK recommendation: ask the user whether to tighten config `{config_id}`. If they agree, run `dtk config list` to confirm the target config id, then use `dtk config allow add/remove <config> <field>` to tighten the config. DTK is falling back repeatedly for this endpoint."
             )),
             "remove_config" => notices.push(format!(
-                "DTK recommendation: ask the user whether to remove or disable config `{config_id}` for this endpoint. DTK is falling back repeatedly and may not be suitable here."
+                "DTK recommendation: ask the user whether to remove or disable config `{config_id}` for this endpoint. If they agree, run `dtk config list` to confirm the target config id, then `dtk config delete <config>`. DTK is falling back repeatedly and may not be suitable here."
             )),
             _ => {}
         }
