@@ -613,6 +613,38 @@ fn normalize_repeated_field_path(field: &str) -> Option<String> {
     Some(render_field_path(&pattern.segments))
 }
 
+fn normalize_path_pattern_for_config(
+    pattern: PathPattern,
+    config: &FilterConfig,
+) -> Option<PathPattern> {
+    let rendered = render_field_path(&pattern.segments);
+    let normalized = normalize_field_path_for_config(&rendered, config)?;
+    let pattern = PathPattern::parse(&normalized);
+    if pattern.segments.is_empty() {
+        None
+    } else {
+        Some(pattern)
+    }
+}
+
+fn normalize_field_path_for_config(field_path: &str, config: &FilterConfig) -> Option<String> {
+    let mut normalized = field_path.trim();
+    if let Some(content_path) = config.content_path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(remainder) = normalized.strip_prefix(content_path) {
+            if remainder.is_empty() || remainder.starts_with('.') || remainder.starts_with('[') {
+                normalized = remainder;
+            }
+        }
+    }
+
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
 fn project_value(
     value: &Value,
     current_path: &[PathSegment],
@@ -1566,9 +1598,16 @@ pub fn recommendation_notices_for_retrieve(
         return Ok(Vec::new());
     };
 
+    let config = load_filter_config(&context.config_path).ok();
     let requested = dedup_field_paths(fields)
         .into_iter()
-        .map(|field| normalize_repeated_field_path(&field).unwrap_or(field))
+        .filter_map(|field| {
+            let normalized = normalize_repeated_field_path(&field).unwrap_or(field);
+            match config.as_ref() {
+                Some(config) => normalize_field_path_for_config(&normalized, config),
+                None => Some(normalized),
+            }
+        })
         .collect::<Vec<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
@@ -1790,12 +1829,15 @@ fn dedup_field_paths(fields: &[String]) -> Vec<String> {
 }
 
 fn field_is_allowlisted(config: &FilterConfig, field_path: &str) -> bool {
-    let actual = PathPattern::parse(field_path);
+    let Some(actual) = normalize_path_pattern_for_config(PathPattern::parse(field_path), config)
+    else {
+        return false;
+    };
     config
         .allow
         .iter()
-        .map(|pattern| PathPattern::parse(pattern))
-        .any(|pattern| pattern.matches_exact(&actual.segments))
+        .filter_map(|pattern| normalize_path_pattern_for_config(PathPattern::parse(pattern), config))
+        .any(|pattern| pattern.covers_path(&actual.segments))
 }
 
 fn load_expand_recommendations(
@@ -1842,11 +1884,17 @@ fn load_expand_recommendations(
                     format!("read expand recommendation: {err}"),
                 )
             })?;
-        if let Ok(config) = load_filter_config(&config_path) {
-            if field_is_allowlisted(&config, &field_path) {
-                continue;
-            }
+        let config = load_filter_config(&config_path).ok();
+        if config
+            .as_ref()
+            .is_some_and(|config| field_is_allowlisted(config, &field_path))
+        {
+            continue;
         }
+        let display_field_path = config
+            .as_ref()
+            .and_then(|config| normalize_field_path_for_config(&field_path, config))
+            .unwrap_or_else(|| field_path.clone());
 
         recommendations.push(ConfigRecommendation {
             config_id: config_id.clone(),
@@ -1855,10 +1903,10 @@ fn load_expand_recommendations(
             domain,
             details,
             recommendation_kind: "expand_allowlist".to_string(),
-            field_path: Some(field_path.clone()),
+            field_path: Some(display_field_path.clone()),
             event_count: access_count,
             summary: format!(
-                "Field `{field_path}` was retrieved {access_count} times for config `{config_id}` and may belong in the allowlist."
+                "Field `{display_field_path}` was retrieved {access_count} times for config `{config_id}` and may belong in the allowlist."
             ),
         });
     }
@@ -2173,6 +2221,27 @@ impl PathPattern {
             self.segments.remove(0);
         }
         self
+    }
+
+    fn covers_path(&self, path: &[PathSegment]) -> bool {
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                path.len() >= self.segments.len()
+                    && self
+                        .segments
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+        }
     }
 
     fn matches_exact(&self, path: &[PathSegment]) -> bool {
@@ -2948,7 +3017,11 @@ fn filter_value(
         .iter()
         .any(|pattern| pattern.path_is_prefix(current_path));
 
-    if allow_active && !is_allowed_exact && !is_allowed_descendant && !is_root {
+    if is_allowed_exact {
+        return Some(value.clone());
+    }
+
+    if allow_active && !is_allowed_descendant && !is_root {
         return None;
     }
 
@@ -3025,15 +3098,15 @@ mod tests {
 
     use super::{
         cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
-        filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
-        load_config_recommendations, parse_json_payload, platform_data_dir,
-        preview_expired_payloads, recommendation_notices_for_exec,
+        field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
+        is_json_payload, load_config_recommendations, load_filter_config, parse_json_payload,
+        platform_data_dir, preview_expired_payloads, recommendation_notices_for_exec,
         recommendation_notices_for_retrieve, record_exec_metrics, record_field_access,
         recover_original_payload, resolve_filter_config_id, retrieve_json_payload,
         retrieve_original_payload, runtime_store_dir, stable_ref_id, start_session,
         store_original_payload, store_original_payload_with_retention, summarize_command_signature,
         usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FieldAccessRecordInput,
-        FilterConfig, RecommendationThresholds,
+        FilterConfig, RecommendationThresholds, normalize_field_path_for_config,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -3351,6 +3424,39 @@ mod tests {
                     "content_path": "users",
                     "store_hint": "local"
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn filters_content_path_nested_subtree_when_parent_field_is_allowed() {
+        let value = parse_json_payload(
+            r#"{"users":[{"id":1,"hair":{"color":"black","type":"wavy"},"secret":"x"}]}"#,
+        )
+        .expect("expected structured json");
+
+        let config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: Some("users".to_string()),
+            allow: vec!["[].hair".to_string()],
+        };
+
+        let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
+        assert_eq!(
+            filtered,
+            serde_json::json!({
+                "users": [
+                    {
+                        "hair": {
+                            "color": "black",
+                            "type": "wavy"
+                        }
+                    }
+                ]
             })
         );
     }
@@ -3767,6 +3873,102 @@ mod tests {
         assert!(notices
             .iter()
             .any(|notice| notice.contains("add `users[].email` to config `users_cfg`")));
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn broader_allowlist_covers_deeper_fields() {
+        let config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: Some("users".to_string()),
+            allow: vec!["[].hair".to_string()],
+        };
+
+        assert!(field_is_allowlisted(&config, "users[].hair.color"));
+        assert!(field_is_allowlisted(&config, "users[0].hair.color"));
+    }
+
+    #[test]
+    fn broader_allowlist_suppresses_nested_recommendation_notice() {
+        let store_dir = temp_store_dir("unit-test-broader-allowlist-notice");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("users-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "users_cfg",
+                "name": "users_cfg",
+                "content_path": "users",
+                "allow": ["[].hair"]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+        let config = load_filter_config(&config_path).expect("load config");
+        assert_eq!(
+            normalize_field_path_for_config("users[].hair.color", &config),
+            Some("[].hair.color".to_string())
+        );
+        assert!(field_is_allowlisted(&config, "users[].hair.color"));
+        let created_at_unix_ms = now_unix_ms();
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_hair_1".to_string(),
+            created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "users_cfg".to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+        record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+        for (offset, field_path) in [
+            "users[0].hair.color",
+            "users[1].hair.color",
+            "users[2].hair.color",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let access = FieldAccessRecordInput {
+                ref_id: "dtk_hair_1".to_string(),
+                created_at_unix_ms: created_at_unix_ms + offset as u128 + 1,
+                fields: vec![(*field_path).to_string()],
+                array_index: None,
+                all: false,
+                access_kind: "retrieve".to_string(),
+            };
+            record_field_access(&store_dir, &access).expect("field access");
+        }
+
+        let recommendations = load_config_recommendations(
+            &store_dir,
+            RecommendationThresholds::default(),
+        )
+        .expect("recommendations");
+        assert!(!recommendations.iter().any(|recommendation| {
+            recommendation.config_id == "users_cfg"
+                && recommendation.recommendation_kind == "expand_allowlist"
+        }));
+
+        let notices = recommendation_notices_for_retrieve(
+            &store_dir,
+            "dtk_hair_1",
+            &["users[3].hair.color".to_string()],
+        )
+        .expect("notices");
+        assert!(notices.is_empty());
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
