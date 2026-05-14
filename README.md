@@ -257,7 +257,7 @@ You can also combine DTK and RTK in one command:
 rtk dtk exec -- git status
 ```
 
-In that flow, DTK checks for a matching config first. If DTK has no config or schema for the command, it returns the original command unchanged, and RTK can continue to work normally. That means DTK does not block RTK when DTK has nothing to filter.
+In that flow, DTK checks for a matching config first. If DTK has no config or schema for the command, it returns the original command unchanged, so the combined `rtk dtk exec -- <command>` path still works without special casing.
 
 ## Commands
 

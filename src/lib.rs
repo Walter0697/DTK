@@ -139,11 +139,15 @@ impl Default for RecommendationThresholds {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FieldAccessContext {
-    command: String,
-    domain: String,
-    details: String,
+    signature: Option<CommandSignatureInput>,
     session_id: Option<i64>,
     ticket_id: String,
+    config_id: String,
+    config_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetrieveContext {
     config_id: String,
     config_path: String,
 }
@@ -592,6 +596,21 @@ fn retrieve_patterns(fields: &[String], strip_leading_any_index: bool) -> Vec<Pa
             }
         })
         .collect()
+}
+
+fn normalize_repeated_field_path(field: &str) -> Option<String> {
+    let mut pattern = PathPattern::parse(field.trim());
+    if pattern.segments.is_empty() {
+        return None;
+    }
+
+    for segment in &mut pattern.segments {
+        if matches!(segment, PathSegment::Index(_)) {
+            *segment = PathSegment::AnyIndex;
+        }
+    }
+
+    Some(render_field_path(&pattern.segments))
 }
 
 fn project_value(
@@ -1267,14 +1286,19 @@ pub fn record_field_access(
         )
     })?;
 
-    let signature_id = resolve_signature_id(
-        &transaction,
-        &context.command,
-        &context.domain,
-        &context.details,
-    )?;
+    let signature_id = match context.signature {
+        Some(signature) => Some(resolve_signature_id(
+            &transaction,
+            &signature.command,
+            &signature.domain,
+            &signature.details,
+        )?),
+        None => None,
+    };
 
     for field_path in dedup_field_paths(&access.fields) {
+        let normalized_field_path =
+            normalize_repeated_field_path(&field_path).unwrap_or(field_path.clone());
         transaction
             .execute(
                 "INSERT INTO field_access_events (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, config_id, config_path, field_path, access_kind, array_index, all_items)
@@ -1287,7 +1311,7 @@ pub fn record_field_access(
                     context.ticket_id.as_str(),
                     context.config_id.as_str(),
                     context.config_path.as_str(),
-                    field_path.as_str(),
+                    normalized_field_path.as_str(),
                     access.access_kind.as_str(),
                     array_index,
                     all_items,
@@ -1542,7 +1566,10 @@ pub fn recommendation_notices_for_retrieve(
         return Ok(Vec::new());
     };
 
-    let requested = dedup_field_paths(fields);
+    let requested = dedup_field_paths(fields)
+        .into_iter()
+        .map(|field| normalize_repeated_field_path(&field).unwrap_or(field))
+        .collect::<Vec<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
     }
@@ -1673,9 +1700,11 @@ fn load_field_access_context_from_usage_dir(
             params![ref_id],
             |row| {
                 Ok(FieldAccessContext {
-                    command: row.get(0)?,
-                    domain: row.get(1)?,
-                    details: row.get(2)?,
+                    signature: Some(CommandSignatureInput {
+                        command: row.get(0)?,
+                        domain: row.get(1)?,
+                        details: row.get(2)?,
+                    }),
                     session_id: row.get(3)?,
                     ticket_id: row.get(4)?,
                     config_id: row.get(5)?,
@@ -1697,10 +1726,52 @@ fn load_field_access_context(
 
     let fallback = resolved_usage_dir(preferred_store_dir);
     if fallback != preferred_store_dir {
-        return load_field_access_context_from_usage_dir(&fallback, ref_id);
+        if let Some(context) = load_field_access_context_from_usage_dir(&fallback, ref_id)? {
+            return Ok(Some(context));
+        }
+    }
+
+    if let Some(retrieve_context) = load_retrieve_context_from_filtered_payload(preferred_store_dir, ref_id)? {
+        return Ok(Some(FieldAccessContext {
+            signature: None,
+            session_id: None,
+            ticket_id: String::new(),
+            config_id: retrieve_context.config_id,
+            config_path: retrieve_context.config_path,
+        }));
     }
 
     Ok(None)
+}
+
+fn load_retrieve_context_from_filtered_payload(
+    store_dir: &Path,
+    ref_id: &str,
+) -> io::Result<Option<RetrieveContext>> {
+    let filtered_path = filtered_payload_path(store_dir, ref_id);
+    if !filtered_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&filtered_path)?;
+    let value: Value = serde_json::from_str(&content).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("parse filtered payload: {err}"),
+        )
+    })?;
+
+    let Some(metadata) = value.get("_dtk").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(config_id) = metadata.get("config_id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    Ok(Some(RetrieveContext {
+        config_id: config_id.to_string(),
+        config_path: filtered_path.to_string_lossy().to_string(),
+    }))
 }
 
 fn dedup_field_paths(fields: &[String]) -> Vec<String> {
@@ -3696,6 +3767,76 @@ mod tests {
         assert!(notices
             .iter()
             .any(|notice| notice.contains("add `users[].email` to config `users_cfg`")));
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn treats_indexed_retrievals_as_the_same_repeat_pattern() {
+        let store_dir = temp_store_dir("unit-test-index-normalization");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("users-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "users_cfg",
+                "name": "users_cfg",
+                "allow": ["users[].id"]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_index_1".to_string(),
+            created_at_unix_ms: now_unix_ms(),
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "users_cfg".to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+        record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+        for (offset, field_path) in ["users[0].hair.color", "users[1].hair.color", "users[2].hair.color"]
+            .iter()
+            .enumerate()
+        {
+            let access = FieldAccessRecordInput {
+                ref_id: "dtk_index_1".to_string(),
+                created_at_unix_ms: now_unix_ms() + offset as u128,
+                fields: vec![(*field_path).to_string()],
+                array_index: None,
+                all: false,
+                access_kind: "retrieve".to_string(),
+            };
+            record_field_access(&store_dir, &access).expect("field access");
+        }
+
+        let recommendations = load_config_recommendations(
+            &store_dir,
+            RecommendationThresholds::default(),
+        )
+        .expect("recommendations");
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.recommendation_kind == "expand_allowlist"
+                && recommendation.field_path.as_deref() == Some("users[].hair.color")
+        }));
+
+        let notices = recommendation_notices_for_retrieve(
+            &store_dir,
+            "dtk_index_1",
+            &["users[3].hair.color".to_string()],
+        )
+        .expect("notices");
+        assert!(notices
+            .iter()
+            .any(|notice| notice.contains("add `users[].hair.color` to config `users_cfg`")));
         let _ = std::fs::remove_dir_all(store_dir);
     }
 

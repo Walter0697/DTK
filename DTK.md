@@ -103,11 +103,9 @@ DTK is designed to work like an agent-facing prompt workflow, not as an install-
 RTK and DTK are complementary:
 
 - Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, and `dtk uninstall`.
-- Use `rtk` only for ordinary non-DTK shell commands when token savings matters.
-- `dtk` should inspect the command and look up a matching config or hook rule before choosing a raw curl command.
+- For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
+- `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
 - Prefer an installed config from `~/.config/dtk/configs/` when one already matches the request.
-- If DTK has no matching rule or schema, it should return the original command or payload unchanged so RTK can still apply its normal filtering behavior.
-- RTK should still be used whenever it would normally be used for token savings.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
 - Do not default to `rtk proxy` for curl/API/JSON flows when `dtk` can handle them.
 
