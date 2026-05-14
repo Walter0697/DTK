@@ -23,6 +23,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `cargo run --quiet --bin dtk_cleanup_store -- --dry-run`
 - `dtk exec --config <config.json> -- <command> [args...]`
 - `dtk retrieve <ref_id> [fields] [--index N | --all]`
+- `dtk config list`
 - `dtk config allow add <config> <field>`
 - `dtk config allow remove <config> <field>`
 - `dtk config delete <config>`
@@ -136,13 +137,15 @@ Recommended flow:
 2. The DTK Config Assistant inspects the payload and asks what matters, using `_dtk.available_fields` and `_dtk.content_path` when available.
 3. DTK writes a reusable source config under `~/.config/dtk/configs/` when needed.
 4. `dtk exec` is used when you want to run the command through DTK and store the original response.
-5. After a config exists, use the DTK allowlist-tuning skill and DTK config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
-6. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
+5. Before changing a config, run `dtk config list` to confirm the installed identifier you should target.
+6. After a config exists, use DTK-native config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
+7. When `dtk retrieve` or `dtk exec` emits a `DTK recommendation:` notice, treat that as a prompt to ask the user whether to add or remove specific fields from the config, or remove the config entirely if it is not reducing token usage enough for the endpoint.
+8. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
    Example:
 
 ```bash
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
-7. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
-8. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint.
-9. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.
+9. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
+10. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint.
+11. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.

@@ -1839,6 +1839,7 @@ fn run_config_command(args: Vec<String>) -> ExitCode {
 
     match subcommand.as_str() {
         "allow" => run_config_allow_command(args.collect()),
+        "list" | "ls" => run_config_list_command(args.collect()),
         "delete" | "remove" | "wipe" => run_config_delete_command(args.collect()),
         "help" | "--help" | "-h" => {
             print_config_usage();
@@ -1923,6 +1924,40 @@ fn run_config_allow_command(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
+fn run_config_list_command(args: Vec<String>) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("unexpected extra arguments");
+        print_config_list_usage();
+        return ExitCode::from(2);
+    }
+
+    let config_dir = default_config_dir().join("configs");
+    let entries = match list_config_entries(&config_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("failed to list configs in {}: {err}", config_dir.display());
+            return ExitCode::from(1);
+        }
+    };
+
+    if entries.is_empty() {
+        println!("no configs found");
+        return ExitCode::from(0);
+    }
+
+    println!("{:<24} {:<24} {}", "identifier", "config_id", "path");
+    for entry in entries {
+        println!(
+            "{:<24} {:<24} {}",
+            entry.identifier,
+            entry.config_id.unwrap_or_else(|| "-".to_string()),
+            entry.path.display()
+        );
+    }
+
+    ExitCode::from(0)
+}
+
 fn run_config_delete_command(args: Vec<String>) -> ExitCode {
     let mut args = args.into_iter();
     let Some(config_identifier) = args.next() else {
@@ -1988,9 +2023,10 @@ fn run_config_delete_command(args: Vec<String>) -> ExitCode {
 }
 
 fn print_config_usage() {
-    eprintln!("usage: dtk config <allow|delete> ...");
+    eprintln!("usage: dtk config <allow|delete|list> ...");
     eprintln!("  dtk config allow add <config> <field>");
     eprintln!("  dtk config allow remove <config> <field>");
+    eprintln!("  dtk config list");
     eprintln!("  dtk config delete <config>");
 }
 
@@ -2002,7 +2038,85 @@ fn print_config_delete_usage() {
     eprintln!("usage: dtk config delete <config>");
 }
 
+fn print_config_list_usage() {
+    eprintln!("usage: dtk config list");
+}
+
+#[derive(Debug, Clone)]
+struct ConfigEntry {
+    identifier: String,
+    config_id: Option<String>,
+    path: PathBuf,
+}
+
+fn list_config_entries(config_dir: &Path) -> io::Result<Vec<ConfigEntry>> {
+    if !config_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(config_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let config = match load_filter_config(&path) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("skipping invalid config {}: {err}", path.display());
+                continue;
+            }
+        };
+        let identifier = path
+            .strip_prefix(config_dir)
+            .ok()
+            .and_then(|relative| relative.to_str().map(|value| value.trim_end_matches(".json").to_string()))
+            .or_else(|| path.file_stem().and_then(|value| value.to_str()).map(|value| value.to_string()))
+            .unwrap_or_else(|| path.display().to_string());
+        entries.push(ConfigEntry {
+            identifier,
+            config_id: resolve_config_identity(&config, &path),
+            path,
+        });
+    }
+
+    entries.sort_by(|left, right| left.identifier.cmp(&right.identifier));
+    Ok(entries)
+}
+
+fn resolve_config_identity(config: &FilterConfig, config_path: &Path) -> Option<String> {
+    config
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            config
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+        })
+        .or_else(|| {
+            config_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+}
+
 fn resolve_config_identifier(identifier: &str) -> io::Result<PathBuf> {
+    resolve_config_identifier_in_dir(identifier, &default_config_dir())
+}
+
+fn resolve_config_identifier_in_dir(identifier: &str, config_dir: &Path) -> io::Result<PathBuf> {
     let trimmed = identifier.trim();
     if trimmed.is_empty() {
         return Err(io::Error::new(
@@ -2011,31 +2125,60 @@ fn resolve_config_identifier(identifier: &str) -> io::Result<PathBuf> {
         ));
     }
 
-    let resolved = resolve_config_path(trimmed);
-    if resolved.exists() {
-        return Ok(resolved);
+    let trimmed_path = Path::new(trimmed);
+    if trimmed_path.is_absolute() && trimmed_path.exists() {
+        return Ok(trimmed_path.to_path_buf());
     }
 
-    let hooks_path = default_config_dir().join("hooks.json");
+    let global_path = config_dir.join("configs").join(trimmed);
+    if global_path.exists() {
+        return Ok(global_path);
+    }
+
+    if trimmed_path.exists() {
+        return Ok(trimmed_path.to_path_buf());
+    }
+
+    let hooks_path = config_dir.join("hooks.json");
     let hooks = match load_hook_rules(&hooks_path) {
-        Ok(hooks) => hooks,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("unknown config or hook rule: {trimmed}"),
-            ))
-        }
+        Ok(hooks) => Some(hooks),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
 
-    for rule in hooks.rules {
-        if rule.name.as_deref() == Some(trimmed) {
-            if let Some(config) = rule.config {
-                let resolved = resolve_config_path(config);
-                if resolved.exists() {
+    if let Some(hooks) = hooks {
+        for rule in hooks.rules {
+            if rule.name.as_deref() == Some(trimmed) {
+                if let Some(config) = rule.config {
+                    let resolved = resolve_config_path(config);
+                    if resolved.exists() {
+                        return Ok(resolved);
+                    }
                     return Ok(resolved);
                 }
-                return Ok(resolved);
+            }
+        }
+    }
+
+    let configs_dir = config_dir.join("configs");
+    if configs_dir.exists() {
+        for entry in fs::read_dir(&configs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let config = match load_filter_config(&path) {
+                Ok(config) => config,
+                Err(_) => continue,
+            };
+            let matches_id = config.id.as_deref().map(str::trim) == Some(trimmed);
+            let matches_name = config.name.as_deref().map(str::trim) == Some(trimmed);
+            if matches_id || matches_name {
+                return Ok(path);
             }
         }
     }
@@ -2149,41 +2292,26 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
         AgentTarget::Codex => {
             let guide = codex_dir().join("DTK.md");
             let skill = codex_dir().join("skills").join("dtk").join("SKILL.md");
-            let tuner = codex_dir()
-                .join("skills")
-                .join("dtk-allowlist-tuner")
-                .join("SKILL.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
-            checks.push(file_check(&tuner, false));
         }
         AgentTarget::Claude => {
             let guide = claude_dir().join("DTK.md");
             let skill = claude_dir().join("skills").join("dtk").join("SKILL.md");
-            let tuner = claude_dir()
-                .join("skills")
-                .join("dtk-allowlist-tuner")
-                .join("SKILL.md");
             let claude_md = claude_dir().join("CLAUDE.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
-            checks.push(file_check(&tuner, false));
             checks.push(file_check(&claude_md, true));
             checks.push(text_contains_check(&claude_md, "@DTK.md", true));
         }
         AgentTarget::Cursor => {
             let guide = cursor_dir().join("DTK.md");
             let skill = cursor_dir().join("skills").join("dtk").join("SKILL.md");
-            let tuner = cursor_dir()
-                .join("skills")
-                .join("dtk-allowlist-tuner")
-                .join("SKILL.md");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
-            checks.push(file_check(&tuner, false));
         }
         AgentTarget::All => unreachable!(),
     }
@@ -2320,10 +2448,10 @@ fn prompt_skill_install(target: AgentTarget) -> bool {
 fn explain_skill(target: AgentTarget) {
     eprintln!();
     eprintln!(
-        "DTK installs two optional skills: one to create configs from live payloads, and one to tune an existing allowlist later."
+        "DTK installs one optional skill to create configs from live payloads; after that, use native DTK config commands to tune the allowlist or delete the config."
     );
     eprintln!(
-        "They run the source, inspect the output, help decide what fields matter, and update the reusable config."
+        "It runs the source, inspects the output, helps decide what fields matter, and drafts the reusable config."
     );
     eprintln!(
         "For {}, it is optional guidance for interactive payload filtering setup.",
@@ -2453,11 +2581,6 @@ fn codex_artifacts_present() -> bool {
             .join("dtk")
             .join("SKILL.md")
             .exists()
-        || codex_dir()
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md")
-            .exists()
 }
 
 fn claude_artifacts_present() -> bool {
@@ -2465,11 +2588,6 @@ fn claude_artifacts_present() -> bool {
     if base.join("DTK.md").exists()
         || base.join("hooks").join("dtk-rewrite.sh").exists()
         || base.join("skills").join("dtk").join("SKILL.md").exists()
-        || base
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md")
-            .exists()
     {
         return true;
     }
@@ -2491,11 +2609,6 @@ fn cursor_artifacts_present() -> bool {
     if base.join("DTK.md").exists()
         || base.join("hooks").join("dtk-rewrite.sh").exists()
         || base.join("skills").join("dtk").join("SKILL.md").exists()
-        || base
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md")
-            .exists()
     {
         return true;
     }
@@ -2538,7 +2651,14 @@ fn resolve_dtk_retrieve_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
     use super::*;
+
+    fn temp_config_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join("dtk-tests").join(name)
+    }
 
     #[test]
     fn usage_mentions_install_and_uninstall() {
@@ -2627,5 +2747,50 @@ mod tests {
         assert!(remove_allow_path(&mut config, "users[].email"));
         assert!(!remove_allow_path(&mut config, "users[].email"));
         assert_eq!(config.allow, vec!["users[].id".to_string()]);
+    }
+
+    #[test]
+    fn lists_configs_with_identifier_and_config_id() {
+        let config_dir = temp_config_dir("config-list");
+        let configs_dir = config_dir.join("configs");
+        let _ = fs::remove_dir_all(&config_dir);
+        fs::create_dir_all(&configs_dir).expect("create configs dir");
+        fs::write(
+            configs_dir.join("users.json"),
+            r#"{"id":"users_cfg","name":"users_cfg","allow":["[].id"]}"#,
+        )
+        .expect("write config");
+        fs::write(
+            configs_dir.join("report.json"),
+            r#"{"name":"report_cfg","allow":["[].title"]}"#,
+        )
+        .expect("write config");
+
+        let entries = list_config_entries(&configs_dir).expect("list configs");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].identifier, "report");
+        assert_eq!(entries[0].config_id.as_deref(), Some("report_cfg"));
+        assert_eq!(entries[1].identifier, "users");
+        assert_eq!(entries[1].config_id.as_deref(), Some("users_cfg"));
+        let _ = fs::remove_dir_all(&config_dir);
+    }
+
+    #[test]
+    fn resolves_config_identifier_by_config_id_inside_temp_config_dir() {
+        let config_dir = temp_config_dir("config-resolve");
+        let configs_dir = config_dir.join("configs");
+        let _ = fs::remove_dir_all(&config_dir);
+        fs::create_dir_all(&configs_dir).expect("create configs dir");
+        let config_path = configs_dir.join("users.json");
+        fs::write(
+            &config_path,
+            r#"{"id":"users_cfg","name":"users_cfg","allow":["[].id"]}"#,
+        )
+        .expect("write config");
+
+        let resolved = resolve_config_identifier_in_dir("users_cfg", &config_dir)
+            .expect("resolve config id");
+        assert_eq!(resolved, config_path);
+        let _ = fs::remove_dir_all(&config_dir);
     }
 }

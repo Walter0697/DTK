@@ -13,8 +13,9 @@ use sha2::{Digest, Sha256};
 
 const DTK_GUIDE: &str = include_str!("../DTK.md");
 const DTK_CONFIG_ASSISTANT_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
-const DTK_ALLOWLIST_TUNER_SKILL: &str = include_str!("../skills/dtk-allowlist-tuner/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
+const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
+const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -667,6 +668,14 @@ pub struct CleanupPreview {
     pub remaining_count: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageCleanupReport {
+    pub removed_exec_metrics: usize,
+    pub removed_exec_metric_issues: usize,
+    pub removed_field_access_events: usize,
+    pub removed_command_signatures: usize,
+}
+
 pub fn cleanup_expired_payloads(store_dir: impl AsRef<Path>) -> io::Result<CleanupReport> {
     let store_dir = store_dir.as_ref();
     let index_path = store_dir.join("index.json");
@@ -688,6 +697,101 @@ pub fn cleanup_expired_payloads(store_dir: impl AsRef<Path>) -> io::Result<Clean
         removed_count,
         remaining_count: index.len(),
     })
+}
+
+fn usage_retention_cutoff_unix_ms() -> u128 {
+    let retention_days = std::env::var("DTK_USAGE_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_USAGE_RETENTION_DAYS);
+    let retention_ms = u128::from(retention_days) * 24 * 60 * 60 * 1000;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    now.saturating_sub(retention_ms)
+}
+
+fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupReport> {
+    let cutoff = i64::try_from(usage_retention_cutoff_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "usage retention cutoff does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    let removed_field_access_events = connection
+        .execute(
+            "DELETE FROM field_access_events WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("cleanup usage field access: {err}"))
+        })?;
+    let removed_exec_metric_issues = connection
+        .execute(
+            "DELETE FROM exec_metric_issues WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("cleanup usage issues: {err}"))
+        })?;
+    let removed_exec_metrics = connection
+        .execute(
+            "DELETE FROM exec_metrics WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("cleanup usage metrics: {err}"))
+        })?;
+
+    connection
+        .execute(
+            "DELETE FROM command_signatures
+             WHERE id NOT IN (
+                SELECT signature_id FROM exec_metrics
+                UNION
+                SELECT signature_id FROM exec_metric_issues
+                UNION
+                SELECT signature_id FROM field_access_events
+             )",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("cleanup usage signatures: {err}"))
+        })?;
+
+    let removed_command_signatures = connection.changes() as usize;
+
+    Ok(UsageCleanupReport {
+        removed_exec_metrics,
+        removed_exec_metric_issues,
+        removed_field_access_events,
+        removed_command_signatures,
+    })
+}
+
+fn usage_schema_version(connection: &Connection) -> io::Result<i32> {
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema version: {err}")))
+}
+
+fn reset_usage_schema(connection: &Connection) -> io::Result<()> {
+    connection
+        .execute_batch(
+            r#"
+            DROP TABLE IF EXISTS field_access_events;
+            DROP TABLE IF EXISTS exec_metric_issues;
+            DROP TABLE IF EXISTS exec_metrics;
+            DROP TABLE IF EXISTS sessions;
+            DROP TABLE IF EXISTS command_signatures;
+            PRAGMA user_version = 0;
+            "#,
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("reset usage schema: {err}")))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1299,6 +1403,10 @@ pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
 }
 
 pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
+    if usage_schema_version(connection)? != USAGE_SCHEMA_VERSION {
+        reset_usage_schema(connection)?;
+    }
+
     connection
         .execute_batch(
             r#"
@@ -1392,74 +1500,11 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
             io::Error::new(io::ErrorKind::Other, format!("create usage schema: {err}"))
         })?;
 
-    ensure_usage_column(connection, "exec_metrics", "session_id", "INTEGER")?;
-    ensure_usage_column(
-        connection,
-        "exec_metrics",
-        "ticket_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metrics",
-        "config_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metrics",
-        "config_path",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(connection, "exec_metric_issues", "session_id", "INTEGER")?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "ticket_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "config_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "config_path",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "issue_kind",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
     connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_exec_metrics_ticket_id ON exec_metrics(ticket_id)",
-            [],
-        )
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
-        })?;
-    connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_ticket_id ON exec_metric_issues(ticket_id)",
-            [],
-        )
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
-        })?;
-    connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_field_access_events_ticket_id ON field_access_events(ticket_id)",
-            [],
-        )
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
-        })?;
+        .pragma_update(None, "user_version", USAGE_SCHEMA_VERSION)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("set usage schema version: {err}")))?;
+
+    cleanup_usage_records(connection)?;
 
     Ok(())
 }
@@ -1555,46 +1600,6 @@ pub fn recommendation_notices_for_exec(
     notices.sort();
     notices.dedup();
     Ok(notices)
-}
-
-fn ensure_usage_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    column_definition: &str,
-) -> io::Result<()> {
-    if usage_column_exists(connection, table, column)? {
-        return Ok(());
-    }
-
-    let statement = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
-    connection.execute(&statement, []).map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("migrate usage schema: {err}"))
-    })?;
-    Ok(())
-}
-
-fn usage_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("inspect usage schema: {err}"))
-        })?;
-    let mut rows = statement.query([]).map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("query usage schema: {err}"))
-    })?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema: {err}")))?
-    {
-        let name: String = row.get(1).map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("read usage column: {err}"))
-        })?;
-        if name == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn dir_is_writable(path: &Path) -> bool {
@@ -2429,51 +2434,24 @@ fn uninstall_codex_agents_attachment() -> io::Result<bool> {
 }
 
 fn install_codex_skill() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(
+    install_text_file(
         codex_dir().join("skills").join("dtk").join("SKILL.md"),
         DTK_CONFIG_ASSISTANT_SKILL,
-    )?;
-    changed |= install_text_file(
-        codex_dir()
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md"),
-        DTK_ALLOWLIST_TUNER_SKILL,
-    )?;
-    Ok(changed)
+    )
 }
 
 fn install_claude_skill() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(
+    install_text_file(
         claude_dir().join("skills").join("dtk").join("SKILL.md"),
         DTK_CONFIG_ASSISTANT_SKILL,
-    )?;
-    changed |= install_text_file(
-        claude_dir()
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md"),
-        DTK_ALLOWLIST_TUNER_SKILL,
-    )?;
-    Ok(changed)
+    )
 }
 
 fn install_cursor_skill() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(
+    install_text_file(
         cursor_dir().join("skills").join("dtk").join("SKILL.md"),
         DTK_CONFIG_ASSISTANT_SKILL,
-    )?;
-    changed |= install_text_file(
-        cursor_dir()
-            .join("skills")
-            .join("dtk-allowlist-tuner")
-            .join("SKILL.md"),
-        DTK_ALLOWLIST_TUNER_SKILL,
-    )?;
-    Ok(changed)
+    )
 }
 
 fn install_claude_guidance() -> io::Result<bool> {
@@ -2991,6 +2969,13 @@ mod tests {
         std::env::temp_dir().join("dtk-tests").join(name)
     }
 
+    fn now_unix_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0)
+    }
+
     #[test]
     fn detects_object() {
         assert!(is_json_payload(r#"{"name":"dtk","count":1}"#));
@@ -3366,9 +3351,10 @@ mod tests {
     #[test]
     fn records_exec_metrics_with_deduplicated_signatures() {
         let store_dir = temp_store_dir("unit-test-usage");
+        let created_at_unix_ms = now_unix_ms();
         let first = ExecMetricsInput {
             ref_id: "dtk_abc_1".to_string(),
-            created_at_unix_ms: 1_715_520_000_000,
+            created_at_unix_ms,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
@@ -3382,7 +3368,7 @@ mod tests {
         };
         let second = ExecMetricsInput {
             ref_id: "dtk_abc_2".to_string(),
-            created_at_unix_ms: 1_715_520_100_000,
+            created_at_unix_ms: created_at_unix_ms + 1,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
@@ -3417,6 +3403,104 @@ mod tests {
         assert_eq!(signature_count, 1);
         assert_eq!(metric_count, 2);
         assert_eq!(domain, "dummyjson.com");
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn prunes_old_usage_rows_while_retaining_recent_entries() {
+        let store_dir = temp_store_dir("unit-test-usage-prune");
+        let stale_created_at_unix_ms = now_unix_ms().saturating_sub(31_u128 * 24 * 60 * 60 * 1000);
+        let fresh_created_at_unix_ms = now_unix_ms();
+
+        let stale = ExecMetricsInput {
+            ref_id: "dtk_stale".to_string(),
+            created_at_unix_ms: stale_created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "git".to_string(),
+                "status".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "stale_cfg".to_string(),
+            config_path: "/tmp/stale.json".to_string(),
+            original_tokens: 10,
+            filtered_tokens: 5,
+        };
+        let fresh = ExecMetricsInput {
+            ref_id: "dtk_fresh".to_string(),
+            created_at_unix_ms: fresh_created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "fresh_cfg".to_string(),
+            config_path: "/tmp/fresh.json".to_string(),
+            original_tokens: 20,
+            filtered_tokens: 10,
+        };
+
+        record_exec_metrics(&store_dir, &stale).expect("stale usage write");
+        record_exec_metrics(&store_dir, &fresh).expect("fresh usage write");
+
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
+        let metric_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM exec_metrics", [], |row| row.get(0))
+            .expect("expected metric count");
+        let signature_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM command_signatures", [], |row| {
+                row.get(0)
+            })
+            .expect("expected signature count");
+
+        assert_eq!(metric_count, 1);
+        assert_eq!(signature_count, 1);
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn resets_old_usage_schema_without_migrating_columns() {
+        let store_dir = temp_store_dir("unit-test-usage-reset");
+        let db_path = usage_db_path(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+
+        {
+            let connection = rusqlite::Connection::open(&db_path).expect("open old db");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE exec_metrics (
+                        ref_id TEXT PRIMARY KEY,
+                        created_at_unix_ms INTEGER NOT NULL
+                    );
+                    PRAGMA user_version = 1;
+                    "#,
+                )
+                .expect("seed old schema");
+        }
+
+        let connection = rusqlite::Connection::open(&db_path).expect("open db");
+        super::init_usage_schema(&connection).expect("reset schema");
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(exec_metrics)")
+            .expect("prepare table info");
+        let mut rows = statement.query([]).expect("query table info");
+        let mut has_config_id = false;
+        while let Some(row) = rows.next().expect("read table info") {
+            let name: String = row.get(1).expect("read column name");
+            if name == "config_id" {
+                has_config_id = true;
+                break;
+            }
+        }
+        let schema_version: i32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema version");
+
+        assert!(has_config_id);
+        assert_eq!(schema_version, super::USAGE_SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
@@ -3456,10 +3540,11 @@ mod tests {
         let store_dir = temp_store_dir("unit-test-usage-ticket");
         let session = start_session(&store_dir, Some("ticket-123".to_string())).expect("start");
         assert_eq!(session.ticket_id, "ticket-123");
+        let created_at_unix_ms = now_unix_ms();
 
         let metrics = ExecMetricsInput {
             ref_id: "dtk_abc_3".to_string(),
-            created_at_unix_ms: 1_715_520_200_000,
+            created_at_unix_ms,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
@@ -3556,10 +3641,11 @@ mod tests {
             .expect("config json"),
         )
         .expect("write config");
+        let created_at_unix_ms = now_unix_ms();
 
         let metrics = ExecMetricsInput {
             ref_id: "dtk_expand_1".to_string(),
-            created_at_unix_ms: 1_715_520_300_000,
+            created_at_unix_ms,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
@@ -3573,7 +3659,7 @@ mod tests {
         };
         record_exec_metrics(&store_dir, &metrics).expect("metrics");
 
-        for created_at_unix_ms in [1_715_520_300_001_u128, 1_715_520_300_002, 1_715_520_300_003] {
+        for created_at_unix_ms in [created_at_unix_ms + 1, created_at_unix_ms + 2, created_at_unix_ms + 3] {
             let access = FieldAccessRecordInput {
                 ref_id: "dtk_expand_1".to_string(),
                 created_at_unix_ms,
@@ -3635,11 +3721,12 @@ mod tests {
             .expect("config json"),
         )
         .expect("write config");
+        let created_at_unix_ms = now_unix_ms();
 
         for (offset, ref_id) in ["dtk_fb_1", "dtk_fb_2", "dtk_fb_3"].iter().enumerate() {
             let metrics = ExecMetricsInput {
                 ref_id: (*ref_id).to_string(),
-                created_at_unix_ms: 1_715_520_400_000 + offset as u128,
+                created_at_unix_ms: created_at_unix_ms + offset as u128,
                 signature: summarize_command_signature(&[
                     "curl".to_string(),
                     "-sS".to_string(),
@@ -3654,7 +3741,7 @@ mod tests {
             record_exec_metrics(&store_dir, &metrics).expect("metrics");
             let issue = super::ExecMetricIssueInput {
                 ref_id: (*ref_id).to_string(),
-                created_at_unix_ms: 1_715_520_400_100 + offset as u128,
+                created_at_unix_ms: created_at_unix_ms + 100 + offset as u128,
                 signature: metrics.signature.clone(),
                 config_id: "wide_cfg".to_string(),
                 config_path: config_path.to_string_lossy().to_string(),

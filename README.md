@@ -101,6 +101,7 @@ dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 If you decide the field should be exposed by default next time, update the config through DTK instead of editing JSON by hand:
 
 ```bash
+dtk config list
 dtk config allow add dummyjson_users.json '[].hair.color'
 dtk config allow remove dummyjson_users.json '[].hair.color'
 dtk config delete dummyjson_users.json
@@ -134,9 +135,9 @@ DTK works as a structured routing layer, not a hard replacement for RTK.
 
 ## How to Add Configuration
 
-DTK can install optional configuration skills during setup.
+DTK can install an optional configuration skill during setup.
 
-Use them when you want DTK to turn a live `curl` request or API response into a reusable config, then refine that config later without starting over.
+Use it when you want DTK to turn a live `curl` request or API response into a reusable config, then refine that config later with native `dtk config ...` commands without starting over.
 
 They help by:
 
@@ -145,7 +146,7 @@ They help by:
 - asking which fields should be hidden
 - drafting the matching DTK config
 - registering the hook rule for later reuse
-- tuning an existing config by expanding or shrinking its allowlist
+- tuning an existing config by expanding or shrinking its allowlist with `dtk config allow add` and `dtk config allow remove`
 
 How to use it:
 
@@ -153,7 +154,7 @@ How to use it:
 dtk install
 ```
 
-During install, DTK asks whether you want the skills installed. Choose `Yes` if you want help building configs from live payloads and tuning them later. Choose `No` if you only want the binaries and will manage configs yourself.
+During install, DTK asks whether you want the skill installed. Choose `Yes` if you want help building configs from live payloads and tuning them later. Choose `No` if you only want the binaries and will manage configs yourself.
 
 The setup flow is interactive. The agent can keep refining the config by asking things like:
 
@@ -162,7 +163,7 @@ The setup flow is interactive. The agent can keep refining the config by asking 
 - which fields should be hidden
 - whether the payload root is an object or an array
 
-After a config already exists, the allowlist-tuning skill can help with follow-up prompts like:
+After a config already exists, DTK-native config commands can handle follow-up prompts like:
 
 - increase the allowlist for `dummyjson_users.json` to include user email
 - decrease the allowlist for the `n8n_workflows_list` rule and hide archived metadata
