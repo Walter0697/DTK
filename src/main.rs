@@ -335,6 +335,7 @@ fn print_usage() {
     eprintln!("Commands:");
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
+    eprintln!("  dtk config list");
     eprintln!("  dtk config allow <add|remove> <config> <field>");
     eprintln!("  dtk config delete <config>");
     eprintln!("  dtk cache <list|show> [ref_id]");
