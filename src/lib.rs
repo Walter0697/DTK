@@ -512,7 +512,10 @@ pub fn store_original_payload_with_retention(
     retention_days: Option<u64>,
 ) -> io::Result<String> {
     let content_ref_id = stable_ref_id(raw_payload).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "input is not a structured payload")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "input is not a structured payload",
+        )
     })?;
     let ref_id = execution_ref_id(&content_ref_id);
 
@@ -3312,8 +3315,14 @@ mod tests {
 
     #[test]
     fn parses_structured_format_aliases() {
-        assert_eq!(parse_structured_format("json"), Some(StructuredFormat::Json));
-        assert_eq!(parse_structured_format("yaml"), Some(StructuredFormat::Yaml));
+        assert_eq!(
+            parse_structured_format("json"),
+            Some(StructuredFormat::Json)
+        );
+        assert_eq!(
+            parse_structured_format("yaml"),
+            Some(StructuredFormat::Yaml)
+        );
         assert_eq!(parse_structured_format("yml"), Some(StructuredFormat::Yaml));
         assert_eq!(parse_structured_format("csv"), None);
     }
@@ -3341,7 +3350,9 @@ mod tests {
     fn json_format_hint_does_not_fallback_to_yaml() {
         let payload = "users:\n  - firstName: Emily\n    age: 28\n";
 
-        assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
+        assert!(
+            parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none()
+        );
     }
 
     #[test]
