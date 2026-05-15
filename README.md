@@ -5,7 +5,7 @@
 
 DTK is Dynamic Token Killer for AI assistants.
 
-It is inspired by RTK, but it solves a different problem: structured payloads, recoverable filtering, and selective retrieval after the fact. DTK keeps the original JSON locally, exposes a smaller `_dtk` surface to the agent, and lets you pull back only the fields you need later.
+It is inspired by RTK, but it solves a different problem: structured payloads, recoverable filtering, and selective retrieval after the fact. DTK keeps the original payload locally, exposes a smaller `_dtk` surface to the agent, and lets you pull back only the fields you need later.
 
 ## Quick Start
 
@@ -13,9 +13,12 @@ It is inspired by RTK, but it solves a different problem: structured payloads, r
 ./install.sh
 ./install-dev.sh
 dtk install
+dtk install-dummy
 ```
 
 Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
+Use `dtk install` for the default JSON dummyjson demo config.
+Use `dtk install-dummy` when you want the broader bundled sample set, including the YAML Kubernetes example config and sample payload.
 
 The repo is pinned to the current stable Rust toolchain via `rust-toolchain.toml`. If your local `cargo` is too old and reports that `Cargo.lock` version `4` is unsupported, run `rustup update stable && rustup default stable` and retry.
 
@@ -26,6 +29,7 @@ dtk exec -- curl -sS https://dummyjson.com/users
 ```
 
 DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjson_users.json`, then uses it automatically when no explicit config is passed. It stores the original payload locally so you can recover more fields later.
+`dtk install-dummy` also installs `~/.config/dtk/configs/kubernetes_deployment.yaml.json` and a checked-in sample YAML payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Before, the payload is the full API response:
 
@@ -152,9 +156,11 @@ How to use it:
 
 ```bash
 dtk install
+dtk install-dummy
 ```
 
 During install, DTK asks whether you want the skill installed. Choose `Yes` if you want help building configs from live payloads and tuning them later. Choose `No` if you only want the binaries and will manage configs yourself.
+`dtk install` keeps the default JSON sample small for first-run experience. `dtk install-dummy` installs all bundled sample configs that match currently supported formats.
 
 The setup flow is interactive. The agent can keep refining the config by asking things like:
 
@@ -194,6 +200,17 @@ For the same `curl` request, the output shape is different:
 `rtk curl` is the smallest, but it is intentionally compressed. `rtk proxy curl` keeps the full raw response, but it is expensive for the model to read. DTK sits in the middle: it trims the surface the agent sees, keeps the original payload locally, and exposes `_dtk.ref_id` so the agent can retrieve more fields later when needed.
 
 DTK is useful when you want the model to see real data, not just a summary, without paying the full token cost of the original payload.
+
+`dtk exec` also supports YAML command output when the command emits a YAML mapping or sequence. DTK parses it into the same filtered JSON surface and stores the original YAML for later retrieval.
+
+When a source needs an explicit parser choice, add an optional `format` field to the config, for example `"format": "yaml"`.
+
+Example:
+
+```bash
+dtk exec --config kubectl_pods.yaml.json -- \
+  kubectl get pods -o yaml
+```
 
 Examples:
 
@@ -269,6 +286,7 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk session`
 - `dtk doctor`
 - `dtk install`
+- `dtk install-dummy`
 - `dtk uninstall`
 - `dtk hook add`
 - `dtk version`

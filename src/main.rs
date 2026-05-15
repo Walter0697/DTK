@@ -8,10 +8,10 @@ use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use dtk::{
     add_or_update_hook_rule, claude_dir, codex_dir, cursor_dir, default_config_dir, end_session,
     filtered_payload_path, init_usage_schema, install_agent_guidance, install_config_skill,
-    load_filter_config, load_hook_rules, read_store_index, remove_hook_rules_for_config,
-    resolve_config_path, runtime_store_dir, runtime_usage_dir, start_session, token_count_for_path,
-    uninstall_agent_guidance, usage_db_path, write_filter_config, AgentTarget, FilterConfig,
-    HookRule,
+    install_agent_guidance_with_dummy_samples, load_filter_config, load_hook_rules,
+    read_store_index, remove_hook_rules_for_config, resolve_config_path, runtime_store_dir,
+    runtime_usage_dir, start_session, token_count_for_path, uninstall_agent_guidance,
+    usage_db_path, write_filter_config, AgentTarget, FilterConfig, HookRule,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -258,7 +258,7 @@ fn main() -> ExitCode {
         None => (detect_agent_target(), true),
     };
 
-    if command == "install"
+    if (command == "install" || command == "install-dummy")
         && explicit_target.is_none()
         && io::stdin().is_terminal()
         && io::stdout().is_terminal()
@@ -302,6 +302,23 @@ fn main() -> ExitCode {
             }
             exit
         }
+        "install-dummy" => {
+            let (exit, changed) = run_agent_steps(
+                "Installing DTK integration and dummy samples",
+                target,
+                install_agent_guidance_with_dummy_samples,
+                "install failed",
+            );
+            if exit == ExitCode::from(0) {
+                maybe_install_skill_interactive(target);
+            }
+            if changed {
+                eprintln!("Install complete for {}", target.as_str());
+            } else {
+                eprintln!("Already up to date for {}", target.as_str());
+            }
+            exit
+        }
         "uninstall" => {
             let (exit, changed) = run_agent_steps(
                 "Removing DTK integration",
@@ -330,9 +347,11 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
+        "Usage: dtk <install|install-dummy|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]"
     );
     eprintln!("Commands:");
+    eprintln!("  dtk install");
+    eprintln!("  dtk install-dummy");
     eprintln!("  dtk exec [dtk_exec args...]");
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
     eprintln!("  dtk config list");
@@ -2672,8 +2691,9 @@ mod tests {
     #[test]
     fn usage_mentions_install_and_uninstall() {
         let usage =
-            "Usage: dtk <install|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
+            "Usage: dtk <install|install-dummy|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor]";
         assert!(usage.contains("install"));
+        assert!(usage.contains("install-dummy"));
         assert!(usage.contains("uninstall"));
         assert!(usage.contains("exec"));
         assert!(usage.contains("retrieve"));

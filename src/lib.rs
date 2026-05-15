@@ -14,9 +14,14 @@ use sha2::{Digest, Sha256};
 const DTK_GUIDE: &str = include_str!("../DTK.md");
 const DTK_CONFIG_ASSISTANT_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
+const KUBERNETES_DEPLOYMENT_YAML_CONFIG: &str =
+    include_str!("../samples/config.kubernetes.deployment.yaml.json");
+const KUBERNETES_DEPLOYMENT_YAML_PAYLOAD: &str =
+    include_str!("../samples/payload.kubernetes.deployment.yaml");
 const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
 const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
+pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -32,9 +37,27 @@ pub struct FilterConfig {
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
     pub content_path: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredFormat {
+    Json,
+    Yaml,
+}
+
+impl StructuredFormat {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Some(Self::Json),
+            "yaml" | "yml" => Some(Self::Yaml),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -173,6 +196,14 @@ pub fn is_json_payload(text: &str) -> bool {
     }
 }
 
+pub fn is_structured_payload(text: &str) -> bool {
+    parse_structured_payload(text).is_some()
+}
+
+pub fn parse_structured_format(value: &str) -> Option<StructuredFormat> {
+    StructuredFormat::parse(value)
+}
+
 pub fn parse_json_payload(text: &str) -> Option<Value> {
     let stripped = text.trim();
     if stripped.is_empty() {
@@ -180,6 +211,34 @@ pub fn parse_json_payload(text: &str) -> Option<Value> {
     }
 
     match serde_json::from_str::<Value>(stripped) {
+        Ok(value @ Value::Object(_)) | Ok(value @ Value::Array(_)) => Some(value),
+        Ok(_) => None,
+        Err(_) => None,
+    }
+}
+
+pub fn parse_structured_payload(text: &str) -> Option<Value> {
+    parse_structured_payload_with_hint(text, None)
+}
+
+pub fn parse_structured_payload_with_hint(
+    text: &str,
+    format: Option<StructuredFormat>,
+) -> Option<Value> {
+    match format {
+        Some(StructuredFormat::Json) => parse_json_payload(text),
+        Some(StructuredFormat::Yaml) => parse_yaml_payload(text),
+        None => parse_json_payload(text).or_else(|| parse_yaml_payload(text)),
+    }
+}
+
+fn parse_yaml_payload(text: &str) -> Option<Value> {
+    let stripped = text.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+
+    match serde_yaml::from_str::<Value>(stripped) {
         Ok(value @ Value::Object(_)) | Ok(value @ Value::Array(_)) => Some(value),
         Ok(_) => None,
         Err(_) => None,
@@ -431,8 +490,8 @@ pub fn resolve_filter_config_id(config: &FilterConfig, config_path: impl AsRef<P
     "dtk_config".to_string()
 }
 
-pub fn stable_ref_id(raw_json: &str) -> Option<String> {
-    let value = parse_json_payload(raw_json)?;
+pub fn stable_ref_id(raw_payload: &str) -> Option<String> {
+    let value = parse_structured_payload(raw_payload)?;
     let canonical = serde_json::to_string(&value).ok()?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -440,17 +499,20 @@ pub fn stable_ref_id(raw_json: &str) -> Option<String> {
     Some(format!("dtk_{}", hex_string(&digest[..16])))
 }
 
-pub fn store_original_payload(raw_json: &str, store_dir: impl AsRef<Path>) -> io::Result<String> {
-    store_original_payload_with_retention(raw_json, store_dir, None)
+pub fn store_original_payload(
+    raw_payload: &str,
+    store_dir: impl AsRef<Path>,
+) -> io::Result<String> {
+    store_original_payload_with_retention(raw_payload, store_dir, None)
 }
 
 pub fn store_original_payload_with_retention(
-    raw_json: &str,
+    raw_payload: &str,
     store_dir: impl AsRef<Path>,
     retention_days: Option<u64>,
 ) -> io::Result<String> {
-    let content_ref_id = stable_ref_id(raw_json).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "input is not structured JSON")
+    let content_ref_id = stable_ref_id(raw_payload).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "input is not a structured payload")
     })?;
     let ref_id = execution_ref_id(&content_ref_id);
 
@@ -459,7 +521,7 @@ pub fn store_original_payload_with_retention(
     fs::create_dir_all(&refs_dir)?;
 
     let payload_path = refs_dir.join(format!("{ref_id}.json"));
-    fs::write(&payload_path, raw_json)?;
+    fs::write(&payload_path, raw_payload)?;
 
     let index_path = store_dir.join("index.json");
     let mut index = load_store_index(&index_path)?;
@@ -531,8 +593,12 @@ pub fn retrieve_original_payload(
     all: bool,
 ) -> io::Result<Value> {
     let payload = recover_original_payload(ref_id, store_dir)?;
-    let value = parse_json_payload(&payload)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "stored payload is not JSON"))?;
+    let value = parse_structured_payload(&payload).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stored payload is not a structured object or array",
+        )
+    })?;
 
     retrieve_json_payload(&value, fields, array_index, all).ok_or_else(|| {
         io::Error::new(
@@ -901,6 +967,19 @@ impl AgentTarget {
 }
 
 pub fn install_agent_guidance(target: AgentTarget) -> io::Result<AgentInstallReport> {
+    install_agent_guidance_with_sample_set(target, false)
+}
+
+pub fn install_agent_guidance_with_dummy_samples(
+    target: AgentTarget,
+) -> io::Result<AgentInstallReport> {
+    install_agent_guidance_with_sample_set(target, true)
+}
+
+fn install_agent_guidance_with_sample_set(
+    target: AgentTarget,
+    install_dummy_samples: bool,
+) -> io::Result<AgentInstallReport> {
     let mut changed = false;
 
     match target {
@@ -922,7 +1001,10 @@ pub fn install_agent_guidance(target: AgentTarget) -> io::Result<AgentInstallRep
         }
     }
 
-    changed |= install_sample_configs()?;
+    changed |= install_default_sample_configs()?;
+    if install_dummy_samples {
+        changed |= install_dummy_sample_configs()?;
+    }
 
     Ok(AgentInstallReport { changed })
 }
@@ -1924,7 +2006,7 @@ fn load_expand_recommendations(
         let display_field_path = config
             .as_ref()
             .and_then(|config| normalize_field_path_for_config(&field_path, config))
-            .unwrap_or_else(|| field_path.clone());
+            .unwrap_or_else(|| field_path.to_string());
 
         recommendations.push(ConfigRecommendation {
             config_id: config_id.clone(),
@@ -2646,13 +2728,30 @@ fn install_cursor_guidance() -> io::Result<bool> {
     Ok(changed)
 }
 
-fn install_sample_configs() -> io::Result<bool> {
+fn install_default_sample_configs() -> io::Result<bool> {
     install_text_file(
         default_config_dir()
             .join("configs")
             .join("dummyjson_users.json"),
         DUMMYJSON_USERS_CONFIG,
     )
+}
+
+fn install_dummy_sample_configs() -> io::Result<bool> {
+    let mut changed = false;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("configs")
+            .join("kubernetes_deployment.yaml.json"),
+        KUBERNETES_DEPLOYMENT_YAML_CONFIG,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("samples")
+            .join("kubernetes_deployment.yaml"),
+        KUBERNETES_DEPLOYMENT_YAML_PAYLOAD,
+    )?;
+    Ok(changed)
 }
 
 fn uninstall_cursor_guidance() -> io::Result<bool> {
@@ -3129,15 +3228,16 @@ mod tests {
     use super::{
         cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
         field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
-        is_json_payload, load_config_recommendations, load_filter_config,
-        normalize_field_path_for_config, parse_json_payload, platform_data_dir,
+        is_json_payload, is_structured_payload, load_config_recommendations, load_filter_config,
+        normalize_field_path_for_config, parse_json_payload, parse_structured_format,
+        parse_structured_payload, parse_structured_payload_with_hint, platform_data_dir,
         preview_expired_payloads, recommendation_notices_for_exec,
         recommendation_notices_for_retrieve, record_exec_metrics, record_field_access,
         recover_original_payload, resolve_filter_config_id, retrieve_json_payload,
         retrieve_original_payload, runtime_store_dir, stable_ref_id, start_session,
         store_original_payload, store_original_payload_with_retention, summarize_command_signature,
         usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FieldAccessRecordInput,
-        FilterConfig, RecommendationThresholds,
+        FilterConfig, RecommendationThresholds, StructuredFormat,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -3176,6 +3276,72 @@ mod tests {
         assert!(!is_json_payload(r#""string""#));
         assert!(!is_json_payload("42"));
         assert!(!is_json_payload("true"));
+    }
+
+    #[test]
+    fn detects_structured_yaml_payload() {
+        let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        assert!(is_structured_payload(payload));
+    }
+
+    #[test]
+    fn parses_structured_yaml_payload() {
+        let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        let parsed = parse_structured_payload(payload);
+
+        assert_eq!(
+            parsed,
+            Some(serde_json::json!({
+                "users": [
+                    {
+                        "firstName": "Emily",
+                        "age": 28
+                    }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn rejects_yaml_primitives_as_structured_payloads() {
+        assert!(!is_structured_payload("hello"));
+        assert!(parse_structured_payload("hello").is_none());
+    }
+
+    #[test]
+    fn parses_structured_format_aliases() {
+        assert_eq!(parse_structured_format("json"), Some(StructuredFormat::Json));
+        assert_eq!(parse_structured_format("yaml"), Some(StructuredFormat::Yaml));
+        assert_eq!(parse_structured_format("yml"), Some(StructuredFormat::Yaml));
+        assert_eq!(parse_structured_format("csv"), None);
+    }
+
+    #[test]
+    fn respects_yaml_format_hint() {
+        let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Yaml));
+
+        assert_eq!(
+            parsed,
+            Some(serde_json::json!({
+                "users": [
+                    {
+                        "firstName": "Emily",
+                        "age": 28
+                    }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn json_format_hint_does_not_fallback_to_yaml() {
+        let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
     }
 
     #[test]
@@ -3243,6 +3409,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec![
                 "[].id".to_string(),
@@ -3279,6 +3446,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["title".to_string()],
         };
@@ -3298,6 +3466,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["title".to_string()],
         };
@@ -3329,6 +3498,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["[].id".to_string(), "[].title".to_string()],
         };
@@ -3368,6 +3538,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["users[].id".to_string()],
         };
@@ -3415,6 +3586,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: Some("users".to_string()),
             allow: vec![
                 "[].id".to_string(),
@@ -3472,6 +3644,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: Some("users".to_string()),
             allow: vec!["[].hair".to_string()],
         };
@@ -3505,6 +3678,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["connections.**".to_string()],
         };
@@ -3794,6 +3968,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec![],
         };
@@ -3803,6 +3978,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec![],
         };
@@ -3812,6 +3988,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec![],
         };
@@ -3916,6 +4093,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: Some("users".to_string()),
             allow: vec!["[].hair".to_string()],
         };
@@ -4277,6 +4455,45 @@ mod tests {
     }
 
     #[test]
+    fn uses_same_stable_ref_for_equivalent_json_and_yaml_payloads() {
+        let json_payload = r#"{"users":[{"firstName":"Emily","age":28}]}"#;
+        let yaml_payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        assert_eq!(stable_ref_id(json_payload), stable_ref_id(yaml_payload));
+    }
+
+    #[test]
+    fn retrieves_fields_from_stored_yaml_payload() {
+        let store_dir = temp_store_dir("unit-test-store-yaml");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+        let ref_id =
+            store_original_payload(payload, &store_dir).expect("expected yaml store to succeed");
+        let retrieved = retrieve_original_payload(
+            &ref_id,
+            &store_dir,
+            &["users[0].firstName".to_string()],
+            None,
+            false,
+        )
+        .expect("expected yaml retrieval to succeed");
+
+        assert_eq!(
+            retrieved,
+            serde_json::json!({
+                "users": [
+                    {
+                        "firstName": "Emily"
+                    }
+                ]
+            })
+        );
+
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
     fn stores_retention_metadata_in_index() {
         let store_dir = temp_store_dir("unit-test-store-retention");
         let payload = r#"{"hello":"world"}"#;
@@ -4328,6 +4545,7 @@ mod tests {
             source: None,
             request: None,
             notes: None,
+            format: None,
             content_path: None,
             allow: vec!["data[].id".to_string(), "nextCursor".to_string()],
         };

@@ -3,11 +3,11 @@ use std::process::{Command, ExitCode, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dtk::{
-    default_store_dir, filter_json_payload_with_ref, load_filter_config, parse_json_payload,
-    recommendation_notices_for_exec, record_exec_metric_issue, record_exec_metrics,
-    resolve_config_path, resolve_filter_config_id, runtime_store_dir, store_filtered_payload,
-    store_original_payload_with_retention, summarize_command_signature, token_count_for_content,
-    ExecMetricIssueInput, ExecMetricsInput, DEFAULT_SAMPLE_CONFIG_NAME,
+    default_store_dir, filter_json_payload_with_ref, load_filter_config, parse_structured_format,
+    parse_structured_payload_with_hint, recommendation_notices_for_exec, record_exec_metric_issue,
+    record_exec_metrics, resolve_config_path, resolve_filter_config_id, runtime_store_dir,
+    store_filtered_payload, store_original_payload_with_retention, summarize_command_signature,
+    token_count_for_content, ExecMetricIssueInput, ExecMetricsInput, DEFAULT_SAMPLE_CONFIG_NAME,
 };
 
 fn main() -> ExitCode {
@@ -70,18 +70,29 @@ fn main() -> ExitCode {
     }
 
     let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-    if let Some(value) = parse_json_payload(&stdout_text) {
-        let resolved_config_path = resolve_config_path(&config_path);
-        let config = match load_filter_config(&resolved_config_path) {
-            Ok(config) => config,
-            Err(err) => {
-                eprintln!(
-                    "failed to load config {}: {err}",
-                    resolved_config_path.display()
-                );
-                return ExitCode::from(1);
+    let resolved_config_path = resolve_config_path(&config_path);
+    let config = match load_filter_config(&resolved_config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!(
+                "failed to load config {}: {err}",
+                resolved_config_path.display()
+            );
+            return ExitCode::from(1);
+        }
+    };
+    let format_hint = match config.format.as_deref() {
+        Some(value) => match parse_structured_format(value) {
+            Some(parsed) => Some(parsed),
+            None => {
+                eprintln!("unsupported config format override: {value}");
+                return ExitCode::from(2);
             }
-        };
+        },
+        None => None,
+    };
+
+    if let Some(value) = parse_structured_payload_with_hint(&stdout_text, format_hint) {
         let config_id = resolve_filter_config_id(&config, &resolved_config_path);
         let config_path_text = resolved_config_path.to_string_lossy().to_string();
 

@@ -1,12 +1,13 @@
 # DTK
 
-DTK is a structured JSON preprocessing layer.
+DTK is a structured payload preprocessing layer.
 
 It reduces model-facing payloads while preserving recoverability of the original data.
 
 ## What DTK Does
 
 - accepts JSON objects and arrays
+- accepts YAML mappings and sequences
 - filters fields with allowlist rules
 - stores the original payload locally for recovery
 - adds `_dtk` metadata with a `ref_id`, field inventory, and content path hints
@@ -30,6 +31,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `dtk version`
 - `./install.sh`
 - `dtk install`
+- `dtk install-dummy`
 - `dtk uninstall`
 
 ## Config Files
@@ -39,6 +41,7 @@ By default, user configs should live under the global DTK config directory, not 
 On Unix-like systems that is `~/.config/dtk/`; use `DTK_CONFIG_DIR` to override it.
 Place source configs under `~/.config/dtk/configs/`.
 `dtk install` seeds a default config at `~/.config/dtk/configs/dummyjson_users.json` so the agent can reuse it later.
+`dtk install-dummy` installs the full bundled sample set, which currently includes the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` and a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Recommended fields:
 
@@ -46,6 +49,7 @@ Recommended fields:
 - `source`
 - `request`
 - `notes`
+- `format` (optional parser override such as `json` or `yaml`)
 - `content_path`
 - `allow`
 
@@ -57,6 +61,7 @@ Example:
   "source": "n8n",
   "request": "curl -sS -H \"X-N8N-API-KEY: $N8N_API_TOKEN\" \"$N8N_BASE_URL/api/v1/workflows?limit=3\"",
   "notes": "Keep the workflow list surface fields and drop the full workflow graph.",
+  "format": "json",
   "content_path": "data",
   "allow": [
     "[].id",
@@ -93,7 +98,7 @@ Example:
 DTK is designed to work like an agent-facing prompt workflow, not as an install-time hook.
 RTK and DTK are complementary:
 
-- Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, and `dtk uninstall`.
+- Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
 - For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
@@ -107,6 +112,9 @@ dtk exec --config n8n_workflows_list.json -- \
 
 dtk exec -- \
   curl -sS https://dummyjson.com/users
+
+dtk exec --config kubectl_pods.yaml.json -- \
+  kubectl get pods -o yaml
 
 dtk retrieve dtk_1234567890abcdef users[].address,users[].age
 

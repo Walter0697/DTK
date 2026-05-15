@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- add YAML command-output support to `dtk exec`
+- add optional config `format` override for structured payload parsing
+- add bundled Kubernetes YAML sample config and `dtk install-dummy`
+
 ## [0.0.2](https://github.com/Walter0697/DTK/compare/v0.0.1...v0.0.2) - 2026-05-15
 
 ### Added
