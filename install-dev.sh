@@ -8,6 +8,10 @@ info() {
   printf '[INFO] %s\n' "$1"
 }
 
+warn() {
+  printf '[WARN] %s\n' "$1"
+}
+
 error() {
   printf '[ERROR] %s\n' "$1" >&2
   exit 1
@@ -23,7 +27,11 @@ main() {
   fi
 
   info "Building DTK from local source at $SCRIPT_DIR"
-  (cd "$SCRIPT_DIR" && cargo build --release --bins) || error "cargo build failed"
+  if ! (cd "$SCRIPT_DIR" && cargo build --release --bins); then
+    warn "If Cargo reports that lock file version 4 is unsupported, update Rust via rustup and retry."
+    warn "Suggested fix: rustup update stable && rustup default stable"
+    error "cargo build failed"
+  fi
 
   mkdir -p "$INSTALL_DIR" || error "failed to create install dir: $INSTALL_DIR"
 

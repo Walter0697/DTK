@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -12,13 +12,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 const DTK_GUIDE: &str = include_str!("../DTK.md");
-const DTK_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
+const DTK_CONFIG_ASSISTANT_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
+const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
+const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct FilterConfig {
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -73,6 +77,8 @@ pub struct ExecMetricsInput {
     pub ref_id: String,
     pub created_at_unix_ms: u128,
     pub signature: CommandSignatureInput,
+    pub config_id: String,
+    pub config_path: String,
     pub original_tokens: usize,
     pub filtered_tokens: usize,
 }
@@ -82,9 +88,68 @@ pub struct ExecMetricIssueInput {
     pub ref_id: String,
     pub created_at_unix_ms: u128,
     pub signature: CommandSignatureInput,
+    pub config_id: String,
+    pub config_path: String,
     pub original_tokens: usize,
     pub filtered_tokens: usize,
     pub issue_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAccessRecordInput {
+    pub ref_id: String,
+    pub created_at_unix_ms: u128,
+    pub fields: Vec<String>,
+    pub array_index: Option<usize>,
+    pub all: bool,
+    pub access_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigRecommendation {
+    pub config_id: String,
+    pub config_path: String,
+    pub command: String,
+    pub domain: String,
+    pub details: String,
+    pub recommendation_kind: String,
+    pub field_path: Option<String>,
+    pub event_count: i64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecommendationThresholds {
+    pub expand_field_access_count: i64,
+    pub tighten_fallback_count: i64,
+    pub remove_fallback_count: i64,
+    pub tighten_allow_count_min: usize,
+}
+
+impl Default for RecommendationThresholds {
+    fn default() -> Self {
+        Self {
+            expand_field_access_count: 3,
+            tighten_fallback_count: 3,
+            remove_fallback_count: 6,
+            tighten_allow_count_min: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FieldAccessContext {
+    signature: Option<CommandSignatureInput>,
+    session_id: Option<i64>,
+    ticket_id: String,
+    config_id: String,
+    config_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetrieveContext {
+    config_id: String,
+    config_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +202,18 @@ pub fn load_filter_config(path: impl AsRef<Path>) -> std::io::Result<FilterConfi
         )
     })?;
     Ok(config)
+}
+
+pub fn write_filter_config(path: impl AsRef<Path>, config: &FilterConfig) -> io::Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let content = serde_json::to_string_pretty(config).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {err}"))
+    })?;
+    fs::write(path, format!("{content}\n"))
 }
 
 pub fn load_hook_rules(path: impl AsRef<Path>) -> std::io::Result<HookRules> {
@@ -198,6 +275,30 @@ pub fn add_or_update_hook_rule(path: impl AsRef<Path>, rule: HookRule) -> std::i
     Ok(changed)
 }
 
+pub fn remove_hook_rules_for_config(
+    path: impl AsRef<Path>,
+    config_identifier: &str,
+) -> io::Result<bool> {
+    let path = path.as_ref();
+    let mut rules = match load_hook_rules(path) {
+        Ok(rules) => rules,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+
+    let before = rules.rules.len();
+    rules.rules.retain(|rule| {
+        rule.config.as_deref() != Some(config_identifier)
+            && rule.name.as_deref() != Some(config_identifier)
+    });
+    if rules.rules.len() == before {
+        return Ok(false);
+    }
+
+    write_hook_rules(path, &rules)?;
+    Ok(true)
+}
+
 pub fn default_store_dir() -> PathBuf {
     std::env::var("DTK_STORE_DIR")
         .map(PathBuf::from)
@@ -206,6 +307,25 @@ pub fn default_store_dir() -> PathBuf {
 
 pub fn runtime_store_dir() -> PathBuf {
     default_store_dir()
+}
+
+pub fn default_usage_dir() -> PathBuf {
+    std::env::var("DTK_USAGE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_store_dir())
+}
+
+pub fn runtime_usage_dir() -> PathBuf {
+    if std::env::var("DTK_USAGE_DIR").is_ok() {
+        return default_usage_dir();
+    }
+
+    let preferred = default_usage_dir();
+    if dir_is_writable(&preferred) {
+        preferred
+    } else {
+        std::env::temp_dir().join("dtk").join("usage")
+    }
 }
 
 pub fn default_config_dir() -> PathBuf {
@@ -274,6 +394,41 @@ pub fn resolve_config_path(path: impl AsRef<Path>) -> PathBuf {
     }
 
     global_path
+}
+
+pub fn resolve_filter_config_id(config: &FilterConfig, config_path: impl AsRef<Path>) -> String {
+    if let Some(id) = config
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return id.to_string();
+    }
+
+    if let Some(name) = config
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return name.to_string();
+    }
+
+    let path = config_path.as_ref();
+    if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+        let stem = stem.trim();
+        if !stem.is_empty() {
+            return stem.to_string();
+        }
+    }
+
+    let rendered = path.to_string_lossy().trim().to_string();
+    if !rendered.is_empty() {
+        return rendered;
+    }
+
+    "dtk_config".to_string()
 }
 
 pub fn stable_ref_id(raw_json: &str) -> Option<String> {
@@ -443,6 +598,58 @@ fn retrieve_patterns(fields: &[String], strip_leading_any_index: bool) -> Vec<Pa
         .collect()
 }
 
+fn normalize_repeated_field_path(field: &str) -> Option<String> {
+    let mut pattern = PathPattern::parse(field.trim());
+    if pattern.segments.is_empty() {
+        return None;
+    }
+
+    for segment in &mut pattern.segments {
+        if matches!(segment, PathSegment::Index(_)) {
+            *segment = PathSegment::AnyIndex;
+        }
+    }
+
+    Some(render_field_path(&pattern.segments))
+}
+
+fn normalize_path_pattern_for_config(
+    pattern: PathPattern,
+    config: &FilterConfig,
+) -> Option<PathPattern> {
+    let rendered = render_field_path(&pattern.segments);
+    let normalized = normalize_field_path_for_config(&rendered, config)?;
+    let pattern = PathPattern::parse(&normalized);
+    if pattern.segments.is_empty() {
+        None
+    } else {
+        Some(pattern)
+    }
+}
+
+fn normalize_field_path_for_config(field_path: &str, config: &FilterConfig) -> Option<String> {
+    let mut normalized = field_path.trim();
+    if let Some(content_path) = config
+        .content_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(remainder) = normalized.strip_prefix(content_path) {
+            if remainder.is_empty() || remainder.starts_with('.') || remainder.starts_with('[') {
+                normalized = remainder;
+            }
+        }
+    }
+
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
 fn project_value(
     value: &Value,
     current_path: &[PathSegment],
@@ -517,6 +724,14 @@ pub struct CleanupPreview {
     pub remaining_count: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageCleanupReport {
+    pub removed_exec_metrics: usize,
+    pub removed_exec_metric_issues: usize,
+    pub removed_field_access_events: usize,
+    pub removed_command_signatures: usize,
+}
+
 pub fn cleanup_expired_payloads(store_dir: impl AsRef<Path>) -> io::Result<CleanupReport> {
     let store_dir = store_dir.as_ref();
     let index_path = store_dir.join("index.json");
@@ -538,6 +753,117 @@ pub fn cleanup_expired_payloads(store_dir: impl AsRef<Path>) -> io::Result<Clean
         removed_count,
         remaining_count: index.len(),
     })
+}
+
+fn usage_retention_cutoff_unix_ms() -> u128 {
+    let retention_days = std::env::var("DTK_USAGE_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_USAGE_RETENTION_DAYS);
+    let retention_ms = u128::from(retention_days) * 24 * 60 * 60 * 1000;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    now.saturating_sub(retention_ms)
+}
+
+fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupReport> {
+    let cutoff = i64::try_from(usage_retention_cutoff_unix_ms()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "usage retention cutoff does not fit into sqlite INTEGER",
+        )
+    })?;
+
+    let removed_field_access_events = connection
+        .execute(
+            "DELETE FROM field_access_events WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage field access: {err}"),
+            )
+        })?;
+    let removed_exec_metric_issues = connection
+        .execute(
+            "DELETE FROM exec_metric_issues WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("cleanup usage issues: {err}"))
+        })?;
+    let removed_exec_metrics = connection
+        .execute(
+            "DELETE FROM exec_metrics WHERE created_at_unix_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage metrics: {err}"),
+            )
+        })?;
+
+    connection
+        .execute(
+            "DELETE FROM command_signatures
+             WHERE id NOT IN (
+                SELECT signature_id FROM exec_metrics
+                UNION
+                SELECT signature_id FROM exec_metric_issues
+                UNION
+                SELECT signature_id FROM field_access_events
+             )",
+            [],
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage signatures: {err}"),
+            )
+        })?;
+
+    let removed_command_signatures = connection.changes() as usize;
+
+    Ok(UsageCleanupReport {
+        removed_exec_metrics,
+        removed_exec_metric_issues,
+        removed_field_access_events,
+        removed_command_signatures,
+    })
+}
+
+fn usage_schema_version(connection: &Connection) -> io::Result<i32> {
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("read usage schema version: {err}"),
+            )
+        })
+}
+
+fn reset_usage_schema(connection: &Connection) -> io::Result<()> {
+    connection
+        .execute_batch(
+            r#"
+            DROP TABLE IF EXISTS field_access_events;
+            DROP TABLE IF EXISTS exec_metric_issues;
+            DROP TABLE IF EXISTS exec_metrics;
+            DROP TABLE IF EXISTS sessions;
+            DROP TABLE IF EXISTS command_signatures;
+            PRAGMA user_version = 0;
+            "#,
+        )
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("reset usage schema: {err}"))
+        })?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -772,9 +1098,9 @@ pub fn record_exec_metrics(
     store_dir: impl AsRef<Path>,
     metrics: &ExecMetricsInput,
 ) -> io::Result<()> {
-    let store_dir = store_dir.as_ref();
-    fs::create_dir_all(store_dir)?;
-    let db_path = usage_db_path(store_dir);
+    let usage_dir = resolved_usage_dir(store_dir);
+    fs::create_dir_all(&usage_dir)?;
+    let db_path = usage_db_path(&usage_dir);
     let mut connection = Connection::open(db_path)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
@@ -841,13 +1167,15 @@ pub fn record_exec_metrics(
 
     transaction
         .execute(
-            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO exec_metrics (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, config_id, config_path, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 metrics.ref_id.as_str(),
                 created_at_unix_ms,
                 signature_id,
                 session_id,
                 ticket_id,
+                metrics.config_id.as_str(),
+                metrics.config_path.as_str(),
                 original_tokens,
                 filtered_tokens,
                 token_delta,
@@ -867,9 +1195,9 @@ pub fn record_exec_metric_issue(
     store_dir: impl AsRef<Path>,
     issue: &ExecMetricIssueInput,
 ) -> io::Result<()> {
-    let store_dir = store_dir.as_ref();
-    fs::create_dir_all(store_dir)?;
-    let db_path = usage_db_path(store_dir);
+    let usage_dir = resolved_usage_dir(store_dir);
+    fs::create_dir_all(&usage_dir)?;
+    let db_path = usage_db_path(&usage_dir);
     let mut connection = Connection::open(db_path)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
@@ -936,13 +1264,15 @@ pub fn record_exec_metric_issue(
 
     transaction
         .execute(
-            "INSERT OR REPLACE INTO exec_metric_issues (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, issue_kind, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO exec_metric_issues (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, config_id, config_path, issue_kind, original_tokens, filtered_tokens, token_delta, token_delta_pct) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 issue.ref_id.as_str(),
                 created_at_unix_ms,
                 signature_id,
                 session_id,
                 ticket_id,
+                issue.config_id.as_str(),
+                issue.config_path.as_str(),
                 issue.issue_kind.as_str(),
                 original_tokens,
                 filtered_tokens,
@@ -959,13 +1289,107 @@ pub fn record_exec_metric_issue(
     Ok(())
 }
 
+pub fn record_field_access(
+    store_dir: impl AsRef<Path>,
+    access: &FieldAccessRecordInput,
+) -> io::Result<()> {
+    if access.fields.is_empty() {
+        return Ok(());
+    }
+
+    let store_dir = store_dir.as_ref();
+    let usage_dir = resolved_usage_dir(store_dir);
+    fs::create_dir_all(&usage_dir)?;
+    let db_path = usage_db_path(&usage_dir);
+    let mut connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("enable foreign keys: {err}"))
+        })?;
+    init_usage_schema(&connection)?;
+
+    let Some(context) = load_field_access_context(store_dir, &access.ref_id)? else {
+        return Ok(());
+    };
+
+    let created_at_unix_ms = i64::try_from(access.created_at_unix_ms).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created_at_unix_ms does not fit into sqlite INTEGER",
+        )
+    })?;
+    let array_index = access
+        .array_index
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "array_index does not fit into sqlite INTEGER",
+            )
+        })?;
+    let all_items = if access.all { 1_i64 } else { 0_i64 };
+
+    let transaction = connection.transaction().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("start field access tx: {err}"),
+        )
+    })?;
+
+    let signature_id = match context.signature {
+        Some(signature) => Some(resolve_signature_id(
+            &transaction,
+            &signature.command,
+            &signature.domain,
+            &signature.details,
+        )?),
+        None => None,
+    };
+
+    for field_path in dedup_field_paths(&access.fields) {
+        let normalized_field_path =
+            normalize_repeated_field_path(&field_path).unwrap_or(field_path.clone());
+        transaction
+            .execute(
+                "INSERT INTO field_access_events (ref_id, created_at_unix_ms, signature_id, session_id, ticket_id, config_id, config_path, field_path, access_kind, array_index, all_items)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    access.ref_id.as_str(),
+                    created_at_unix_ms,
+                    signature_id,
+                    context.session_id,
+                    context.ticket_id.as_str(),
+                    context.config_id.as_str(),
+                    context.config_path.as_str(),
+                    normalized_field_path.as_str(),
+                    access.access_kind.as_str(),
+                    array_index,
+                    all_items,
+                ],
+            )
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert field access: {err}")))?;
+    }
+
+    transaction.commit().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("commit field access tx: {err}"),
+        )
+    })?;
+
+    Ok(())
+}
+
 pub fn start_session(
     store_dir: impl AsRef<Path>,
     ticket_id: Option<String>,
 ) -> io::Result<SessionRecord> {
-    let store_dir = store_dir.as_ref();
-    fs::create_dir_all(store_dir)?;
-    let db_path = usage_db_path(store_dir);
+    let usage_dir = resolved_usage_dir(store_dir);
+    fs::create_dir_all(&usage_dir)?;
+    let db_path = usage_db_path(&usage_dir);
     let connection = Connection::open(db_path)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
@@ -1020,8 +1444,8 @@ pub fn start_session(
 }
 
 pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
-    let store_dir = store_dir.as_ref();
-    let db_path = usage_db_path(store_dir);
+    let usage_dir = resolved_usage_dir(store_dir);
+    let db_path = usage_db_path(&usage_dir);
     let connection = Connection::open(db_path)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
     connection
@@ -1056,6 +1480,10 @@ pub fn end_session(store_dir: impl AsRef<Path>) -> io::Result<SessionRecord> {
 }
 
 pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
+    if usage_schema_version(connection)? != USAGE_SCHEMA_VERSION {
+        reset_usage_schema(connection)?;
+    }
+
     connection
         .execute_batch(
             r#"
@@ -1073,6 +1501,8 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
                 signature_id INTEGER NOT NULL,
                 session_id INTEGER,
                 ticket_id TEXT NOT NULL DEFAULT '',
+                config_id TEXT NOT NULL DEFAULT '',
+                config_path TEXT NOT NULL DEFAULT '',
                 original_tokens INTEGER NOT NULL,
                 filtered_tokens INTEGER NOT NULL,
                 token_delta INTEGER NOT NULL,
@@ -1086,6 +1516,8 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
                 signature_id INTEGER NOT NULL,
                 session_id INTEGER,
                 ticket_id TEXT NOT NULL DEFAULT '',
+                config_id TEXT NOT NULL DEFAULT '',
+                config_path TEXT NOT NULL DEFAULT '',
                 issue_kind TEXT NOT NULL,
                 original_tokens INTEGER NOT NULL,
                 filtered_tokens INTEGER NOT NULL,
@@ -1101,14 +1533,42 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
                 ended_at_unix_ms INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS field_access_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref_id TEXT NOT NULL,
+                created_at_unix_ms INTEGER NOT NULL,
+                signature_id INTEGER,
+                session_id INTEGER,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                config_id TEXT NOT NULL DEFAULT '',
+                config_path TEXT NOT NULL DEFAULT '',
+                field_path TEXT NOT NULL,
+                access_kind TEXT NOT NULL DEFAULT 'retrieve',
+                array_index INTEGER,
+                all_items INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(signature_id) REFERENCES command_signatures(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_exec_metrics_created_at_unix_ms
                 ON exec_metrics(created_at_unix_ms);
             CREATE INDEX IF NOT EXISTS idx_exec_metrics_signature_id
                 ON exec_metrics(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_exec_metrics_config_id
+                ON exec_metrics(config_id);
             CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_created_at_unix_ms
                 ON exec_metric_issues(created_at_unix_ms);
             CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_signature_id
                 ON exec_metric_issues(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_config_id
+                ON exec_metric_issues(config_id);
+            CREATE INDEX IF NOT EXISTS idx_field_access_events_created_at_unix_ms
+                ON field_access_events(created_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS idx_field_access_events_signature_id
+                ON field_access_events(signature_id);
+            CREATE INDEX IF NOT EXISTS idx_field_access_events_config_id
+                ON field_access_events(config_id);
+            CREATE INDEX IF NOT EXISTS idx_field_access_events_field_path
+                ON field_access_events(field_path);
             CREATE INDEX IF NOT EXISTS idx_sessions_active
                 ON sessions(ended_at_unix_ms, started_at_unix_ms);
             "#,
@@ -1117,84 +1577,450 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
             io::Error::new(io::ErrorKind::Other, format!("create usage schema: {err}"))
         })?;
 
-    ensure_usage_column(connection, "exec_metrics", "session_id", "INTEGER")?;
-    ensure_usage_column(
-        connection,
-        "exec_metrics",
-        "ticket_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(connection, "exec_metric_issues", "session_id", "INTEGER")?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "ticket_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_usage_column(
-        connection,
-        "exec_metric_issues",
-        "issue_kind",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
     connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_exec_metrics_ticket_id ON exec_metrics(ticket_id)",
-            [],
-        )
+        .pragma_update(None, "user_version", USAGE_SCHEMA_VERSION)
         .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("set usage schema version: {err}"),
+            )
         })?;
-    connection
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_exec_metric_issues_ticket_id ON exec_metric_issues(ticket_id)",
-            [],
-        )
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("create usage index: {err}"))
-        })?;
+
+    cleanup_usage_records(connection)?;
 
     Ok(())
 }
 
-fn ensure_usage_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    column_definition: &str,
-) -> io::Result<()> {
-    if usage_column_exists(connection, table, column)? {
-        return Ok(());
+pub fn load_config_recommendations(
+    store_dir: impl AsRef<Path>,
+    thresholds: RecommendationThresholds,
+) -> io::Result<Vec<ConfigRecommendation>> {
+    let usage_dir = resolved_usage_dir(store_dir);
+    fs::create_dir_all(&usage_dir)?;
+    let db_path = usage_db_path(&usage_dir);
+    let connection = Connection::open(db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+    init_usage_schema(&connection)?;
+
+    let mut recommendations = Vec::new();
+    recommendations.extend(load_expand_recommendations(&connection, thresholds)?);
+    recommendations.extend(load_fallback_recommendations(&connection, thresholds)?);
+    recommendations.sort_by(|left, right| {
+        right
+            .event_count
+            .cmp(&left.event_count)
+            .then_with(|| left.recommendation_kind.cmp(&right.recommendation_kind))
+            .then_with(|| left.config_id.cmp(&right.config_id))
+    });
+    Ok(recommendations)
+}
+
+pub fn recommendation_notices_for_retrieve(
+    store_dir: impl AsRef<Path>,
+    ref_id: &str,
+    fields: &[String],
+) -> io::Result<Vec<String>> {
+    let Some(context) = load_field_access_context(store_dir.as_ref(), ref_id)? else {
+        return Ok(Vec::new());
+    };
+
+    let config = load_filter_config(&context.config_path).ok();
+    let requested = dedup_field_paths(fields)
+        .into_iter()
+        .filter_map(|field| {
+            let normalized = normalize_repeated_field_path(&field).unwrap_or(field);
+            match config.as_ref() {
+                Some(config) => normalize_field_path_for_config(&normalized, config),
+                None => Some(normalized),
+            }
+        })
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let statement = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
-    connection.execute(&statement, []).map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("migrate usage schema: {err}"))
-    })?;
-    Ok(())
+    let recommendations =
+        load_config_recommendations(store_dir, RecommendationThresholds::default())?;
+    let mut notices = Vec::new();
+    for recommendation in recommendations {
+        if recommendation.recommendation_kind != "expand_allowlist" {
+            continue;
+        }
+        if recommendation.config_id != context.config_id {
+            continue;
+        }
+        let Some(field_path) = recommendation.field_path.as_deref() else {
+            continue;
+        };
+        if !requested.iter().any(|field| field == field_path) {
+            continue;
+        }
+        notices.push(format!(
+            "DTK recommendation: ask the user whether to add `{field_path}` to config `{}`. If they agree, run `dtk config list` to confirm the target config id, then `dtk config allow add <config> <field>`. This field has been requested repeatedly for the same endpoint.",
+            recommendation.config_id
+        ));
+    }
+
+    notices.sort();
+    notices.dedup();
+    Ok(notices)
 }
 
-fn usage_column_exists(connection: &Connection, table: &str, column: &str) -> io::Result<bool> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("inspect usage schema: {err}"))
-        })?;
-    let mut rows = statement.query([]).map_err(|err| {
-        io::Error::new(io::ErrorKind::Other, format!("query usage schema: {err}"))
-    })?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema: {err}")))?
-    {
-        let name: String = row.get(1).map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("read usage column: {err}"))
-        })?;
-        if name == column {
-            return Ok(true);
+pub fn recommendation_notices_for_exec(
+    store_dir: impl AsRef<Path>,
+    config_id: &str,
+    details: &str,
+) -> io::Result<Vec<String>> {
+    let recommendations =
+        load_config_recommendations(store_dir, RecommendationThresholds::default())?;
+    let mut notices = Vec::new();
+    for recommendation in recommendations {
+        if recommendation.config_id != config_id || recommendation.details != details {
+            continue;
+        }
+        match recommendation.recommendation_kind.as_str() {
+            "tighten_allowlist" => notices.push(format!(
+                "DTK recommendation: ask the user whether to tighten config `{config_id}`. If they agree, run `dtk config list` to confirm the target config id, then use `dtk config allow add/remove <config> <field>` to tighten the config. DTK is falling back repeatedly for this endpoint."
+            )),
+            "remove_config" => notices.push(format!(
+                "DTK recommendation: ask the user whether to remove or disable config `{config_id}` for this endpoint. If they agree, run `dtk config list` to confirm the target config id, then `dtk config delete <config>`. DTK is falling back repeatedly and may not be suitable here."
+            )),
+            _ => {}
         }
     }
-    Ok(false)
+
+    notices.sort();
+    notices.dedup();
+    Ok(notices)
+}
+
+fn dir_is_writable(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+
+    let test_path = path.join(".dtk-write-test");
+    match fs::write(&test_path, b"ok") {
+        Ok(()) => {
+            let _ = fs::remove_file(&test_path);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn resolved_usage_dir(preferred_store_dir: impl AsRef<Path>) -> PathBuf {
+    if std::env::var("DTK_USAGE_DIR").is_ok() {
+        return runtime_usage_dir();
+    }
+
+    let preferred = preferred_store_dir.as_ref();
+    if dir_is_writable(preferred) {
+        preferred.to_path_buf()
+    } else {
+        runtime_usage_dir()
+    }
+}
+
+fn resolve_signature_id(
+    connection: &Connection,
+    command: &str,
+    domain: &str,
+    details: &str,
+) -> io::Result<i64> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO command_signatures (command, domain, details) VALUES (?1, ?2, ?3)",
+            params![command, domain, details],
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("insert signature: {err}")))?;
+
+    connection
+        .query_row(
+            "SELECT id FROM command_signatures WHERE command = ?1 AND domain = ?2 AND details = ?3",
+            params![command, domain, details],
+            |row| row.get(0),
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("resolve signature id: {err}")))
+}
+
+fn load_field_access_context_from_usage_dir(
+    usage_dir: &Path,
+    ref_id: &str,
+) -> io::Result<Option<FieldAccessContext>> {
+    let db_path = usage_db_path(usage_dir);
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let connection = Connection::open(&db_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("open usage db: {err}")))?;
+
+    connection
+        .query_row(
+            "SELECT cs.command, cs.domain, cs.details, em.session_id, em.ticket_id, em.config_id, em.config_path
+             FROM exec_metrics em
+             JOIN command_signatures cs ON cs.id = em.signature_id
+             WHERE em.ref_id = ?1",
+            params![ref_id],
+            |row| {
+                Ok(FieldAccessContext {
+                    signature: Some(CommandSignatureInput {
+                        command: row.get(0)?,
+                        domain: row.get(1)?,
+                        details: row.get(2)?,
+                    }),
+                    session_id: row.get(3)?,
+                    ticket_id: row.get(4)?,
+                    config_id: row.get(5)?,
+                    config_path: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("load field access context: {err}")))
+}
+
+fn load_field_access_context(
+    preferred_store_dir: &Path,
+    ref_id: &str,
+) -> io::Result<Option<FieldAccessContext>> {
+    if let Some(context) = load_field_access_context_from_usage_dir(preferred_store_dir, ref_id)? {
+        return Ok(Some(context));
+    }
+
+    let fallback = resolved_usage_dir(preferred_store_dir);
+    if fallback != preferred_store_dir {
+        if let Some(context) = load_field_access_context_from_usage_dir(&fallback, ref_id)? {
+            return Ok(Some(context));
+        }
+    }
+
+    if let Some(retrieve_context) =
+        load_retrieve_context_from_filtered_payload(preferred_store_dir, ref_id)?
+    {
+        return Ok(Some(FieldAccessContext {
+            signature: None,
+            session_id: None,
+            ticket_id: String::new(),
+            config_id: retrieve_context.config_id,
+            config_path: retrieve_context.config_path,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn load_retrieve_context_from_filtered_payload(
+    store_dir: &Path,
+    ref_id: &str,
+) -> io::Result<Option<RetrieveContext>> {
+    let filtered_path = filtered_payload_path(store_dir, ref_id);
+    if !filtered_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&filtered_path)?;
+    let value: Value = serde_json::from_str(&content).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("parse filtered payload: {err}"),
+        )
+    })?;
+
+    let Some(metadata) = value.get("_dtk").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(config_id) = metadata.get("config_id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    Ok(Some(RetrieveContext {
+        config_id: config_id.to_string(),
+        config_path: filtered_path.to_string_lossy().to_string(),
+    }))
+}
+
+fn dedup_field_paths(fields: &[String]) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for field in fields {
+        let trimmed = field.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if deduped.iter().any(|existing: &String| existing == trimmed) {
+            continue;
+        }
+        deduped.push(trimmed.to_string());
+    }
+    deduped
+}
+
+fn field_is_allowlisted(config: &FilterConfig, field_path: &str) -> bool {
+    let Some(actual) = normalize_path_pattern_for_config(PathPattern::parse(field_path), config)
+    else {
+        return false;
+    };
+    config
+        .allow
+        .iter()
+        .filter_map(|pattern| {
+            normalize_path_pattern_for_config(PathPattern::parse(pattern), config)
+        })
+        .any(|pattern| pattern.covers_path(&actual.segments))
+}
+
+fn load_expand_recommendations(
+    connection: &Connection,
+    thresholds: RecommendationThresholds,
+) -> io::Result<Vec<ConfigRecommendation>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT fa.config_id, fa.config_path, cs.command, cs.domain, cs.details, fa.field_path, COUNT(*) as access_count
+             FROM field_access_events fa
+             LEFT JOIN command_signatures cs ON cs.id = fa.signature_id
+             WHERE fa.config_id != ''
+             GROUP BY fa.config_id, fa.config_path, fa.signature_id, fa.field_path
+             HAVING COUNT(*) >= ?1
+             ORDER BY access_count DESC",
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("prepare expand recommendations: {err}")))?;
+
+    let rows = statement
+        .query_map(params![thresholds.expand_field_access_count], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("query expand recommendations: {err}"),
+            )
+        })?;
+
+    let mut recommendations = Vec::new();
+    for row in rows {
+        let (config_id, config_path, command, domain, details, field_path, access_count) = row
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("read expand recommendation: {err}"),
+                )
+            })?;
+        let config = load_filter_config(&config_path).ok();
+        if config
+            .as_ref()
+            .is_some_and(|config| field_is_allowlisted(config, &field_path))
+        {
+            continue;
+        }
+        let display_field_path = config
+            .as_ref()
+            .and_then(|config| normalize_field_path_for_config(&field_path, config))
+            .unwrap_or_else(|| field_path.clone());
+
+        recommendations.push(ConfigRecommendation {
+            config_id: config_id.clone(),
+            config_path: config_path.clone(),
+            command,
+            domain,
+            details,
+            recommendation_kind: "expand_allowlist".to_string(),
+            field_path: Some(display_field_path.clone()),
+            event_count: access_count,
+            summary: format!(
+                "Field `{display_field_path}` was retrieved {access_count} times for config `{config_id}` and may belong in the allowlist."
+            ),
+        });
+    }
+
+    Ok(recommendations)
+}
+
+fn load_fallback_recommendations(
+    connection: &Connection,
+    thresholds: RecommendationThresholds,
+) -> io::Result<Vec<ConfigRecommendation>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT emi.config_id, emi.config_path, cs.command, cs.domain, cs.details, COUNT(*) as issue_count
+             FROM exec_metric_issues emi
+             LEFT JOIN command_signatures cs ON cs.id = emi.signature_id
+             WHERE emi.config_id != '' AND emi.issue_kind = 'filtered_larger_than_original'
+             GROUP BY emi.config_id, emi.config_path, emi.signature_id
+             HAVING COUNT(*) >= ?1
+             ORDER BY issue_count DESC",
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("prepare fallback recommendations: {err}")))?;
+
+    let rows = statement
+        .query_map(params![thresholds.tighten_fallback_count], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("query fallback recommendations: {err}"),
+            )
+        })?;
+
+    let mut recommendations = Vec::new();
+    for row in rows {
+        let (config_id, config_path, command, domain, details, issue_count) =
+            row.map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("read fallback recommendation: {err}"),
+                )
+            })?;
+        let allow_count = load_filter_config(&config_path)
+            .map(|config| config.allow.len())
+            .unwrap_or(0);
+        let recommendation_kind = if issue_count >= thresholds.remove_fallback_count {
+            "remove_config"
+        } else if allow_count >= thresholds.tighten_allow_count_min {
+            "tighten_allowlist"
+        } else {
+            "remove_config"
+        };
+        let summary = if recommendation_kind == "tighten_allowlist" {
+            format!(
+                "Config `{config_id}` fell back {issue_count} times and exposes {allow_count} allowlist paths; consider shrinking it for this command signature."
+            )
+        } else {
+            format!(
+                "Config `{config_id}` fell back {issue_count} times for the same command signature and may not be suitable for this endpoint."
+            )
+        };
+
+        recommendations.push(ConfigRecommendation {
+            config_id,
+            config_path,
+            command,
+            domain,
+            details,
+            recommendation_kind: recommendation_kind.to_string(),
+            field_path: None,
+            event_count: issue_count,
+            summary,
+        });
+    }
+
+    Ok(recommendations)
 }
 
 fn active_session(connection: &Connection) -> io::Result<Option<SessionRecord>> {
@@ -1294,7 +2120,7 @@ pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value
 
 pub fn filter_json_payload_with_metadata(value: &Value, config: &FilterConfig) -> Option<Value> {
     let filtered = filter_json_payload(value, config)?;
-    Some(apply_filter_metadata(value, &filtered, None))
+    Some(apply_filter_metadata(value, &filtered, None, Some(config)))
 }
 
 pub fn filter_json_payload_with_ref(
@@ -1303,7 +2129,12 @@ pub fn filter_json_payload_with_ref(
     ref_id: &str,
 ) -> Option<Value> {
     let filtered = filter_json_payload(value, config)?;
-    Some(apply_filter_metadata(value, &filtered, Some(ref_id)))
+    Some(apply_filter_metadata(
+        value,
+        &filtered,
+        Some(ref_id),
+        Some(config),
+    ))
 }
 
 fn collect_field_paths_inner(value: &Value, prefix: &str, paths: &mut Vec<String>) {
@@ -1420,6 +2251,27 @@ impl PathPattern {
             self.segments.remove(0);
         }
         self
+    }
+
+    fn covers_path(&self, path: &[PathSegment]) -> bool {
+        match self.segments.last() {
+            Some(PathSegment::AnyDescendant) => {
+                let fixed_len = self.segments.len().saturating_sub(1);
+                path.len() >= fixed_len
+                    && self.segments[..fixed_len]
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+            _ => {
+                path.len() >= self.segments.len()
+                    && self
+                        .segments
+                        .iter()
+                        .zip(path.iter())
+                        .all(|(pattern, actual)| segment_matches(pattern, actual))
+            }
+        }
     }
 
     fn matches_exact(&self, path: &[PathSegment]) -> bool {
@@ -1690,15 +2542,19 @@ fn array_item_kind(value: &Value) -> Option<String> {
     }
 }
 
-fn merge_ref_id(metadata: Value, ref_id: Option<&str>) -> Value {
-    let Some(ref_id) = ref_id else {
-        return metadata;
-    };
-
+fn merge_runtime_metadata(metadata: Value, ref_id: Option<&str>, config_id: Option<&str>) -> Value {
     match metadata {
         Value::Object(map) => {
             let mut map = map;
-            map.insert("ref_id".to_string(), Value::String(ref_id.to_string()));
+            if let Some(ref_id) = ref_id {
+                map.insert("ref_id".to_string(), Value::String(ref_id.to_string()));
+            }
+            if let Some(config_id) = config_id {
+                map.insert(
+                    "config_id".to_string(),
+                    Value::String(config_id.to_string()),
+                );
+            }
             Value::Object(map)
         }
         other => other,
@@ -1750,21 +2606,21 @@ fn uninstall_codex_agents_attachment() -> io::Result<bool> {
 fn install_codex_skill() -> io::Result<bool> {
     install_text_file(
         codex_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_SKILL,
+        DTK_CONFIG_ASSISTANT_SKILL,
     )
 }
 
 fn install_claude_skill() -> io::Result<bool> {
     install_text_file(
         claude_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_SKILL,
+        DTK_CONFIG_ASSISTANT_SKILL,
     )
 }
 
 fn install_cursor_skill() -> io::Result<bool> {
     install_text_file(
         cursor_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_SKILL,
+        DTK_CONFIG_ASSISTANT_SKILL,
     )
 }
 
@@ -2145,18 +3001,34 @@ fn write_store_index(path: &Path, index: &BTreeMap<String, StoreIndexEntry>) -> 
     fs::write(path, content)
 }
 
-fn apply_filter_metadata(original: &Value, filtered: &Value, ref_id: Option<&str>) -> Value {
+fn apply_filter_metadata(
+    original: &Value,
+    filtered: &Value,
+    ref_id: Option<&str>,
+    config: Option<&FilterConfig>,
+) -> Value {
     let metadata = surface_metadata(original);
+    let config_id = config.and_then(|config| {
+        config
+            .id
+            .as_deref()
+            .or(config.name.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    });
 
     match filtered {
         Value::Object(map) => {
             let mut map = map.clone();
-            map.insert("_dtk".to_string(), merge_ref_id(metadata, ref_id));
+            map.insert(
+                "_dtk".to_string(),
+                merge_runtime_metadata(metadata, ref_id, config_id),
+            );
             Value::Object(map)
         }
         _ => serde_json::json!({
             "result": filtered,
-            "_dtk": merge_ref_id(metadata, ref_id)
+            "_dtk": merge_runtime_metadata(metadata, ref_id, config_id)
         }),
     }
 }
@@ -2175,7 +3047,11 @@ fn filter_value(
         .iter()
         .any(|pattern| pattern.path_is_prefix(current_path));
 
-    if allow_active && !is_allowed_exact && !is_allowed_descendant && !is_root {
+    if is_allowed_exact {
+        return Some(value.clone());
+    }
+
+    if allow_active && !is_allowed_descendant && !is_root {
         return None;
     }
 
@@ -2252,16 +3128,27 @@ mod tests {
 
     use super::{
         cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
-        filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
-        parse_json_payload, platform_data_dir, preview_expired_payloads, record_exec_metrics,
-        recover_original_payload, retrieve_json_payload, retrieve_original_payload,
-        runtime_store_dir, stable_ref_id, start_session, store_original_payload,
-        store_original_payload_with_retention, summarize_command_signature, usage_db_path,
-        windows_data_dir, xdg_data_dir, ExecMetricsInput, FilterConfig,
+        field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
+        is_json_payload, load_config_recommendations, load_filter_config,
+        normalize_field_path_for_config, parse_json_payload, platform_data_dir,
+        preview_expired_payloads, recommendation_notices_for_exec,
+        recommendation_notices_for_retrieve, record_exec_metrics, record_field_access,
+        recover_original_payload, resolve_filter_config_id, retrieve_json_payload,
+        retrieve_original_payload, runtime_store_dir, stable_ref_id, start_session,
+        store_original_payload, store_original_payload_with_retention, summarize_command_signature,
+        usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FieldAccessRecordInput,
+        FilterConfig, RecommendationThresholds,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join("dtk-tests").join(name)
+    }
+
+    fn now_unix_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0)
     }
 
     #[test]
@@ -2351,6 +3238,7 @@ mod tests {
         .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2386,6 +3274,7 @@ mod tests {
             .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2404,6 +3293,7 @@ mod tests {
             .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2434,6 +3324,7 @@ mod tests {
             .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2472,6 +3363,7 @@ mod tests {
         .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2518,6 +3410,7 @@ mod tests {
         .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2567,6 +3460,39 @@ mod tests {
     }
 
     #[test]
+    fn filters_content_path_nested_subtree_when_parent_field_is_allowed() {
+        let value = parse_json_payload(
+            r#"{"users":[{"id":1,"hair":{"color":"black","type":"wavy"},"secret":"x"}]}"#,
+        )
+        .expect("expected structured json");
+
+        let config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: Some("users".to_string()),
+            allow: vec!["[].hair".to_string()],
+        };
+
+        let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
+        assert_eq!(
+            filtered,
+            serde_json::json!({
+                "users": [
+                    {
+                        "hair": {
+                            "color": "black",
+                            "type": "wavy"
+                        }
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
     fn filters_wildcard_subtree_for_dynamic_object_keys() {
         let value = parse_json_payload(
             r#"{"connections":{"Alpha":{"main":[[{"node":"A"}]]},"Beta":{"ai_tool":[[{"node":"B"}]]}},"name":"wf"}"#,
@@ -2574,6 +3500,7 @@ mod tests {
         .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,
@@ -2632,27 +3559,32 @@ mod tests {
     #[test]
     fn records_exec_metrics_with_deduplicated_signatures() {
         let store_dir = temp_store_dir("unit-test-usage");
+        let created_at_unix_ms = now_unix_ms();
         let first = ExecMetricsInput {
             ref_id: "dtk_abc_1".to_string(),
-            created_at_unix_ms: 1_715_520_000_000,
+            created_at_unix_ms,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
                 "https://dummyjson.com/users".to_string(),
             ])
             .expect("expected signature"),
+            config_id: "dummyjson_users".to_string(),
+            config_path: "/tmp/dummyjson_users.json".to_string(),
             original_tokens: 120,
             filtered_tokens: 30,
         };
         let second = ExecMetricsInput {
             ref_id: "dtk_abc_2".to_string(),
-            created_at_unix_ms: 1_715_520_100_000,
+            created_at_unix_ms: created_at_unix_ms + 1,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
                 "https://dummyjson.com/users".to_string(),
             ])
             .expect("expected signature"),
+            config_id: "dummyjson_users".to_string(),
+            config_path: "/tmp/dummyjson_users.json".to_string(),
             original_tokens: 220,
             filtered_tokens: 40,
         };
@@ -2679,6 +3611,101 @@ mod tests {
         assert_eq!(signature_count, 1);
         assert_eq!(metric_count, 2);
         assert_eq!(domain, "dummyjson.com");
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn prunes_old_usage_rows_while_retaining_recent_entries() {
+        let store_dir = temp_store_dir("unit-test-usage-prune");
+        let stale_created_at_unix_ms = now_unix_ms().saturating_sub(31_u128 * 24 * 60 * 60 * 1000);
+        let fresh_created_at_unix_ms = now_unix_ms();
+
+        let stale = ExecMetricsInput {
+            ref_id: "dtk_stale".to_string(),
+            created_at_unix_ms: stale_created_at_unix_ms,
+            signature: summarize_command_signature(&["git".to_string(), "status".to_string()])
+                .expect("expected signature"),
+            config_id: "stale_cfg".to_string(),
+            config_path: "/tmp/stale.json".to_string(),
+            original_tokens: 10,
+            filtered_tokens: 5,
+        };
+        let fresh = ExecMetricsInput {
+            ref_id: "dtk_fresh".to_string(),
+            created_at_unix_ms: fresh_created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "fresh_cfg".to_string(),
+            config_path: "/tmp/fresh.json".to_string(),
+            original_tokens: 20,
+            filtered_tokens: 10,
+        };
+
+        record_exec_metrics(&store_dir, &stale).expect("stale usage write");
+        record_exec_metrics(&store_dir, &fresh).expect("fresh usage write");
+
+        let connection =
+            rusqlite::Connection::open(usage_db_path(&store_dir)).expect("expected usage db");
+        let metric_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM exec_metrics", [], |row| row.get(0))
+            .expect("expected metric count");
+        let signature_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM command_signatures", [], |row| {
+                row.get(0)
+            })
+            .expect("expected signature count");
+
+        assert_eq!(metric_count, 1);
+        assert_eq!(signature_count, 1);
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn resets_old_usage_schema_without_migrating_columns() {
+        let store_dir = temp_store_dir("unit-test-usage-reset");
+        let db_path = usage_db_path(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+
+        {
+            let connection = rusqlite::Connection::open(&db_path).expect("open old db");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE exec_metrics (
+                        ref_id TEXT PRIMARY KEY,
+                        created_at_unix_ms INTEGER NOT NULL
+                    );
+                    PRAGMA user_version = 1;
+                    "#,
+                )
+                .expect("seed old schema");
+        }
+
+        let connection = rusqlite::Connection::open(&db_path).expect("open db");
+        super::init_usage_schema(&connection).expect("reset schema");
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(exec_metrics)")
+            .expect("prepare table info");
+        let mut rows = statement.query([]).expect("query table info");
+        let mut has_config_id = false;
+        while let Some(row) = rows.next().expect("read table info") {
+            let name: String = row.get(1).expect("read column name");
+            if name == "config_id" {
+                has_config_id = true;
+                break;
+            }
+        }
+        let schema_version: i32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema version");
+
+        assert!(has_config_id);
+        assert_eq!(schema_version, super::USAGE_SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
@@ -2718,16 +3745,19 @@ mod tests {
         let store_dir = temp_store_dir("unit-test-usage-ticket");
         let session = start_session(&store_dir, Some("ticket-123".to_string())).expect("start");
         assert_eq!(session.ticket_id, "ticket-123");
+        let created_at_unix_ms = now_unix_ms();
 
         let metrics = ExecMetricsInput {
             ref_id: "dtk_abc_3".to_string(),
-            created_at_unix_ms: 1_715_520_200_000,
+            created_at_unix_ms,
             signature: summarize_command_signature(&[
                 "curl".to_string(),
                 "-sS".to_string(),
                 "https://dummyjson.com/users".to_string(),
             ])
             .expect("expected signature"),
+            config_id: "dummyjson_users".to_string(),
+            config_path: "/tmp/dummyjson_users.json".to_string(),
             original_tokens: 200,
             filtered_tokens: 50,
         };
@@ -2753,6 +3783,374 @@ mod tests {
 
         assert_eq!(ticket_id, "ticket-123");
         assert_eq!(session_id, session.id);
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn resolves_filter_config_id_from_explicit_id_then_name_then_path() {
+        let with_id = FilterConfig {
+            id: Some("cfg-users".to_string()),
+            name: Some("users".to_string()),
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec![],
+        };
+        let with_name = FilterConfig {
+            id: None,
+            name: Some("users-name".to_string()),
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec![],
+        };
+        let anonymous = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: None,
+            allow: vec![],
+        };
+
+        assert_eq!(
+            resolve_filter_config_id(&with_id, "/tmp/example.json"),
+            "cfg-users"
+        );
+        assert_eq!(
+            resolve_filter_config_id(&with_name, "/tmp/example.json"),
+            "users-name"
+        );
+        assert_eq!(
+            resolve_filter_config_id(&anonymous, "/tmp/example.json"),
+            "example"
+        );
+    }
+
+    #[test]
+    fn records_field_access_and_generates_expand_recommendation() {
+        let store_dir = temp_store_dir("unit-test-field-access-expand");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("users-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "users_cfg",
+                "name": "users_cfg",
+                "allow": ["users[].id"]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+        let created_at_unix_ms = now_unix_ms();
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_expand_1".to_string(),
+            created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "users_cfg".to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+        record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+        for created_at_unix_ms in [
+            created_at_unix_ms + 1,
+            created_at_unix_ms + 2,
+            created_at_unix_ms + 3,
+        ] {
+            let access = FieldAccessRecordInput {
+                ref_id: "dtk_expand_1".to_string(),
+                created_at_unix_ms,
+                fields: vec!["users[].email".to_string()],
+                array_index: None,
+                all: false,
+                access_kind: "retrieve".to_string(),
+            };
+            record_field_access(&store_dir, &access).expect("field access");
+        }
+
+        let recommendations = load_config_recommendations(
+            &store_dir,
+            RecommendationThresholds {
+                expand_field_access_count: 3,
+                tighten_fallback_count: 3,
+                remove_fallback_count: 6,
+                tighten_allow_count_min: 6,
+            },
+        )
+        .expect("recommendations");
+
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.recommendation_kind == "expand_allowlist"
+                && recommendation.config_id == "users_cfg"
+                && recommendation.field_path.as_deref() == Some("users[].email")
+        }));
+        let notices = recommendation_notices_for_retrieve(
+            &store_dir,
+            "dtk_expand_1",
+            &["users[].email".to_string()],
+        )
+        .expect("notices");
+        assert!(notices
+            .iter()
+            .any(|notice| notice.contains("add `users[].email` to config `users_cfg`")));
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn broader_allowlist_covers_deeper_fields() {
+        let config = FilterConfig {
+            id: None,
+            name: None,
+            source: None,
+            request: None,
+            notes: None,
+            content_path: Some("users".to_string()),
+            allow: vec!["[].hair".to_string()],
+        };
+
+        assert!(field_is_allowlisted(&config, "users[].hair.color"));
+        assert!(field_is_allowlisted(&config, "users[0].hair.color"));
+    }
+
+    #[test]
+    fn broader_allowlist_suppresses_nested_recommendation_notice() {
+        let store_dir = temp_store_dir("unit-test-broader-allowlist-notice");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("users-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "users_cfg",
+                "name": "users_cfg",
+                "content_path": "users",
+                "allow": ["[].hair"]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+        let config = load_filter_config(&config_path).expect("load config");
+        assert_eq!(
+            normalize_field_path_for_config("users[].hair.color", &config),
+            Some("[].hair.color".to_string())
+        );
+        assert!(field_is_allowlisted(&config, "users[].hair.color"));
+        let created_at_unix_ms = now_unix_ms();
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_hair_1".to_string(),
+            created_at_unix_ms,
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "users_cfg".to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+        record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+        for (offset, field_path) in [
+            "users[0].hair.color",
+            "users[1].hair.color",
+            "users[2].hair.color",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let access = FieldAccessRecordInput {
+                ref_id: "dtk_hair_1".to_string(),
+                created_at_unix_ms: created_at_unix_ms + offset as u128 + 1,
+                fields: vec![(*field_path).to_string()],
+                array_index: None,
+                all: false,
+                access_kind: "retrieve".to_string(),
+            };
+            record_field_access(&store_dir, &access).expect("field access");
+        }
+
+        let recommendations =
+            load_config_recommendations(&store_dir, RecommendationThresholds::default())
+                .expect("recommendations");
+        assert!(!recommendations.iter().any(|recommendation| {
+            recommendation.config_id == "users_cfg"
+                && recommendation.recommendation_kind == "expand_allowlist"
+        }));
+
+        let notices = recommendation_notices_for_retrieve(
+            &store_dir,
+            "dtk_hair_1",
+            &["users[3].hair.color".to_string()],
+        )
+        .expect("notices");
+        assert!(notices.is_empty());
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn treats_indexed_retrievals_as_the_same_repeat_pattern() {
+        let store_dir = temp_store_dir("unit-test-index-normalization");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("users-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "users_cfg",
+                "name": "users_cfg",
+                "allow": ["users[].id"]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+
+        let metrics = ExecMetricsInput {
+            ref_id: "dtk_index_1".to_string(),
+            created_at_unix_ms: now_unix_ms(),
+            signature: summarize_command_signature(&[
+                "curl".to_string(),
+                "-sS".to_string(),
+                "https://dummyjson.com/users".to_string(),
+            ])
+            .expect("expected signature"),
+            config_id: "users_cfg".to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            original_tokens: 200,
+            filtered_tokens: 50,
+        };
+        record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+        for (offset, field_path) in [
+            "users[0].hair.color",
+            "users[1].hair.color",
+            "users[2].hair.color",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let access = FieldAccessRecordInput {
+                ref_id: "dtk_index_1".to_string(),
+                created_at_unix_ms: now_unix_ms() + offset as u128,
+                fields: vec![(*field_path).to_string()],
+                array_index: None,
+                all: false,
+                access_kind: "retrieve".to_string(),
+            };
+            record_field_access(&store_dir, &access).expect("field access");
+        }
+
+        let recommendations =
+            load_config_recommendations(&store_dir, RecommendationThresholds::default())
+                .expect("recommendations");
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.recommendation_kind == "expand_allowlist"
+                && recommendation.field_path.as_deref() == Some("users[].hair.color")
+        }));
+
+        let notices = recommendation_notices_for_retrieve(
+            &store_dir,
+            "dtk_index_1",
+            &["users[3].hair.color".to_string()],
+        )
+        .expect("notices");
+        assert!(notices
+            .iter()
+            .any(|notice| notice.contains("add `users[].hair.color` to config `users_cfg`")));
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+
+    #[test]
+    fn generates_tighten_or_remove_recommendation_for_repeated_fallbacks() {
+        let store_dir = temp_store_dir("unit-test-fallback-recommendation");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let config_path = store_dir.join("wide-config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "wide_cfg",
+                "allow": [
+                    "users[].id",
+                    "users[].name",
+                    "users[].email",
+                    "users[].phone",
+                    "users[].address",
+                    "users[].company"
+                ]
+            }))
+            .expect("config json"),
+        )
+        .expect("write config");
+        let created_at_unix_ms = now_unix_ms();
+
+        for (offset, ref_id) in ["dtk_fb_1", "dtk_fb_2", "dtk_fb_3"].iter().enumerate() {
+            let metrics = ExecMetricsInput {
+                ref_id: (*ref_id).to_string(),
+                created_at_unix_ms: created_at_unix_ms + offset as u128,
+                signature: summarize_command_signature(&[
+                    "curl".to_string(),
+                    "-sS".to_string(),
+                    "https://dummyjson.com/users".to_string(),
+                ])
+                .expect("expected signature"),
+                config_id: "wide_cfg".to_string(),
+                config_path: config_path.to_string_lossy().to_string(),
+                original_tokens: 100,
+                filtered_tokens: 100,
+            };
+            record_exec_metrics(&store_dir, &metrics).expect("metrics");
+            let issue = super::ExecMetricIssueInput {
+                ref_id: (*ref_id).to_string(),
+                created_at_unix_ms: created_at_unix_ms + 100 + offset as u128,
+                signature: metrics.signature.clone(),
+                config_id: "wide_cfg".to_string(),
+                config_path: config_path.to_string_lossy().to_string(),
+                original_tokens: 100,
+                filtered_tokens: 140,
+                issue_kind: "filtered_larger_than_original".to_string(),
+            };
+            super::record_exec_metric_issue(&store_dir, &issue).expect("issue");
+        }
+
+        let recommendations = load_config_recommendations(
+            &store_dir,
+            RecommendationThresholds {
+                expand_field_access_count: 3,
+                tighten_fallback_count: 3,
+                remove_fallback_count: 6,
+                tighten_allow_count_min: 6,
+            },
+        )
+        .expect("recommendations");
+
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.config_id == "wide_cfg"
+                && recommendation.recommendation_kind == "tighten_allowlist"
+        }));
+        let notices = recommendation_notices_for_exec(
+            &store_dir,
+            "wide_cfg",
+            "curl -sS https://dummyjson.com/users",
+        )
+        .expect("notices");
+        assert!(notices
+            .iter()
+            .any(|notice| notice.contains("tighten config `wide_cfg`")));
         let _ = std::fs::remove_dir_all(store_dir);
     }
 
@@ -2925,6 +4323,7 @@ mod tests {
         .expect("expected structured json");
 
         let config = FilterConfig {
+            id: None,
             name: None,
             source: None,
             request: None,

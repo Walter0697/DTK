@@ -1,6 +1,10 @@
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use dtk::{retrieve_original_payload, runtime_store_dir};
+use dtk::{
+    recommendation_notices_for_retrieve, record_field_access, retrieve_original_payload,
+    runtime_store_dir, FieldAccessRecordInput,
+};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -94,6 +98,33 @@ fn main() -> ExitCode {
 
     match serde_json::to_string_pretty(&payload) {
         Ok(text) => {
+            if !fields.is_empty() {
+                let created_at_unix_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0);
+                let access = FieldAccessRecordInput {
+                    ref_id: ref_id.clone(),
+                    created_at_unix_ms,
+                    fields: fields.clone(),
+                    array_index,
+                    all,
+                    access_kind: "retrieve".to_string(),
+                };
+                if let Err(err) = record_field_access(&store_dir, &access) {
+                    eprintln!("failed to record field access: {err}");
+                }
+                match recommendation_notices_for_retrieve(&store_dir, &ref_id, &fields) {
+                    Ok(notices) => {
+                        for notice in notices {
+                            eprintln!("{notice}");
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("failed to load DTK recommendations: {err}");
+                    }
+                }
+            }
             println!("{text}");
             ExitCode::from(0)
         }

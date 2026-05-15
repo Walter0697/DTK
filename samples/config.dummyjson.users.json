@@ -1,4 +1,5 @@
 {
+  "id": "dummyjson_users",
   "name": "dummyjson_users",
   "source": "dummyjson",
   "request": "curl -sS https://dummyjson.com/users",

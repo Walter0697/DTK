@@ -53,6 +53,12 @@ Please inspect the response, identify the fields that are likely needed, ask me 
    - `_dtk.ref_id`
 8. Adjust rules based on user intent and rerun.
 
+When updating an existing installed config after creation, prefer DTK-native config commands over manual JSON editing:
+
+- `dtk config allow add <config> <field>`
+- `dtk config allow remove <config> <field>`
+- `dtk config delete <config>`
+
 ## Rule Design Notes
 
 - Start with the smallest useful surface fields.

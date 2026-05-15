@@ -98,7 +98,11 @@ install_from_source() {
   fi
 
   info "Falling back to local build from $LOCAL_SOURCE_DIR"
-  (cd "$LOCAL_SOURCE_DIR" && cargo build --release --bins) || error "cargo build failed"
+  if ! (cd "$LOCAL_SOURCE_DIR" && cargo build --release --bins); then
+    warn "If Cargo reports that lock file version 4 is unsupported, update Rust via rustup and retry."
+    warn "Suggested fix: rustup update stable && rustup default stable"
+    error "cargo build failed"
+  fi
 
   mkdir -p "$INSTALL_DIR" || error "failed to create install dir: $INSTALL_DIR"
   for binary_name in $BINARY_NAMES; do
