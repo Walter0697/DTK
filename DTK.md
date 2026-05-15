@@ -88,15 +88,6 @@ Example:
 - favor promoting stable repeated fields into the config when doing so will reduce repeated `dtk retrieve` calls and make the next filtered payload more useful
 - for collections and arrays, prefer reusable wildcard paths over one-off index-specific paths when suggesting config updates
 
-## Storage
-
-- raw payloads are stored in the user data directory by default
-- Unix-like systems use XDG data locations
-- Windows uses `%LOCALAPPDATA%` or `%APPDATA%`
-- `DTK_STORE_DIR` overrides the default
-- usage metrics and recommendation tracking use the store directory by default
-- `DTK_USAGE_DIR` overrides the usage metrics location when an agent session needs a different writable path
-
 ## Prompt Flow
 
 DTK is designed to work like an agent-facing prompt workflow, not as an install-time hook.
@@ -105,7 +96,6 @@ RTK and DTK are complementary:
 - Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, and `dtk uninstall`.
 - For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
-- Prefer an installed config from `~/.config/dtk/configs/` when one already matches the request.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
 - Do not default to `rtk proxy` for curl/API/JSON flows when `dtk` can handle them.
 
