@@ -1,4 +1,11 @@
-use super::*;
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::process::ExitCode;
+
+use dtk::{filtered_payload_path, read_store_index, runtime_store_dir, token_count_for_path};
+
+use super::{age_from_unix_ms, print_cache_table, token_delta_for_tokens};
 
 pub(super) fn run_cache_command(args: Vec<String>) -> ExitCode {
     let mut iter = args.into_iter();
