@@ -2075,8 +2075,16 @@ fn list_config_entries(config_dir: &Path) -> io::Result<Vec<ConfigEntry>> {
         let identifier = path
             .strip_prefix(config_dir)
             .ok()
-            .and_then(|relative| relative.to_str().map(|value| value.trim_end_matches(".json").to_string()))
-            .or_else(|| path.file_stem().and_then(|value| value.to_str()).map(|value| value.to_string()))
+            .and_then(|relative| {
+                relative
+                    .to_str()
+                    .map(|value| value.trim_end_matches(".json").to_string())
+            })
+            .or_else(|| {
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_string())
+            })
             .unwrap_or_else(|| path.display().to_string());
         entries.push(ConfigEntry {
             identifier,
@@ -2788,8 +2796,8 @@ mod tests {
         )
         .expect("write config");
 
-        let resolved = resolve_config_identifier_in_dir("users_cfg", &config_dir)
-            .expect("resolve config id");
+        let resolved =
+            resolve_config_identifier_in_dir("users_cfg", &config_dir).expect("resolve config id");
         assert_eq!(resolved, config_path);
         let _ = fs::remove_dir_all(&config_dir);
     }

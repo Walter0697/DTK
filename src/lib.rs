@@ -629,7 +629,12 @@ fn normalize_path_pattern_for_config(
 
 fn normalize_field_path_for_config(field_path: &str, config: &FilterConfig) -> Option<String> {
     let mut normalized = field_path.trim();
-    if let Some(content_path) = config.content_path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(content_path) = config
+        .content_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         if let Some(remainder) = normalized.strip_prefix(content_path) {
             if remainder.is_empty() || remainder.starts_with('.') || remainder.starts_with('[') {
                 normalized = remainder;
@@ -778,7 +783,10 @@ fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupRepo
             params![cutoff],
         )
         .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("cleanup usage field access: {err}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage field access: {err}"),
+            )
         })?;
     let removed_exec_metric_issues = connection
         .execute(
@@ -794,7 +802,10 @@ fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupRepo
             params![cutoff],
         )
         .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("cleanup usage metrics: {err}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage metrics: {err}"),
+            )
         })?;
 
     connection
@@ -810,7 +821,10 @@ fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupRepo
             [],
         )
         .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("cleanup usage signatures: {err}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cleanup usage signatures: {err}"),
+            )
         })?;
 
     let removed_command_signatures = connection.changes() as usize;
@@ -826,7 +840,12 @@ fn cleanup_usage_records(connection: &Connection) -> io::Result<UsageCleanupRepo
 fn usage_schema_version(connection: &Connection) -> io::Result<i32> {
     connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("read usage schema version: {err}")))
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("read usage schema version: {err}"),
+            )
+        })
 }
 
 fn reset_usage_schema(connection: &Connection) -> io::Result<()> {
@@ -841,7 +860,9 @@ fn reset_usage_schema(connection: &Connection) -> io::Result<()> {
             PRAGMA user_version = 0;
             "#,
         )
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("reset usage schema: {err}")))?;
+        .map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, format!("reset usage schema: {err}"))
+        })?;
     Ok(())
 }
 
@@ -1558,7 +1579,12 @@ pub fn init_usage_schema(connection: &Connection) -> io::Result<()> {
 
     connection
         .pragma_update(None, "user_version", USAGE_SCHEMA_VERSION)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("set usage schema version: {err}")))?;
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("set usage schema version: {err}"),
+            )
+        })?;
 
     cleanup_usage_records(connection)?;
 
@@ -1770,7 +1796,9 @@ fn load_field_access_context(
         }
     }
 
-    if let Some(retrieve_context) = load_retrieve_context_from_filtered_payload(preferred_store_dir, ref_id)? {
+    if let Some(retrieve_context) =
+        load_retrieve_context_from_filtered_payload(preferred_store_dir, ref_id)?
+    {
         return Ok(Some(FieldAccessContext {
             signature: None,
             session_id: None,
@@ -1836,7 +1864,9 @@ fn field_is_allowlisted(config: &FilterConfig, field_path: &str) -> bool {
     config
         .allow
         .iter()
-        .filter_map(|pattern| normalize_path_pattern_for_config(PathPattern::parse(pattern), config))
+        .filter_map(|pattern| {
+            normalize_path_pattern_for_config(PathPattern::parse(pattern), config)
+        })
         .any(|pattern| pattern.covers_path(&actual.segments))
 }
 
@@ -3099,14 +3129,15 @@ mod tests {
     use super::{
         cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
         field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
-        is_json_payload, load_config_recommendations, load_filter_config, parse_json_payload,
-        platform_data_dir, preview_expired_payloads, recommendation_notices_for_exec,
+        is_json_payload, load_config_recommendations, load_filter_config,
+        normalize_field_path_for_config, parse_json_payload, platform_data_dir,
+        preview_expired_payloads, recommendation_notices_for_exec,
         recommendation_notices_for_retrieve, record_exec_metrics, record_field_access,
         recover_original_payload, resolve_filter_config_id, retrieve_json_payload,
         retrieve_original_payload, runtime_store_dir, stable_ref_id, start_session,
         store_original_payload, store_original_payload_with_retention, summarize_command_signature,
         usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FieldAccessRecordInput,
-        FilterConfig, RecommendationThresholds, normalize_field_path_for_config,
+        FilterConfig, RecommendationThresholds,
     };
 
     fn temp_store_dir(name: &str) -> PathBuf {
@@ -3592,11 +3623,8 @@ mod tests {
         let stale = ExecMetricsInput {
             ref_id: "dtk_stale".to_string(),
             created_at_unix_ms: stale_created_at_unix_ms,
-            signature: summarize_command_signature(&[
-                "git".to_string(),
-                "status".to_string(),
-            ])
-            .expect("expected signature"),
+            signature: summarize_command_signature(&["git".to_string(), "status".to_string()])
+                .expect("expected signature"),
             config_id: "stale_cfg".to_string(),
             config_path: "/tmp/stale.json".to_string(),
             original_tokens: 10,
@@ -3836,7 +3864,11 @@ mod tests {
         };
         record_exec_metrics(&store_dir, &metrics).expect("metrics");
 
-        for created_at_unix_ms in [created_at_unix_ms + 1, created_at_unix_ms + 2, created_at_unix_ms + 3] {
+        for created_at_unix_ms in [
+            created_at_unix_ms + 1,
+            created_at_unix_ms + 2,
+            created_at_unix_ms + 3,
+        ] {
             let access = FieldAccessRecordInput {
                 ref_id: "dtk_expand_1".to_string(),
                 created_at_unix_ms,
@@ -3952,11 +3984,9 @@ mod tests {
             record_field_access(&store_dir, &access).expect("field access");
         }
 
-        let recommendations = load_config_recommendations(
-            &store_dir,
-            RecommendationThresholds::default(),
-        )
-        .expect("recommendations");
+        let recommendations =
+            load_config_recommendations(&store_dir, RecommendationThresholds::default())
+                .expect("recommendations");
         assert!(!recommendations.iter().any(|recommendation| {
             recommendation.config_id == "users_cfg"
                 && recommendation.recommendation_kind == "expand_allowlist"
@@ -4005,9 +4035,13 @@ mod tests {
         };
         record_exec_metrics(&store_dir, &metrics).expect("metrics");
 
-        for (offset, field_path) in ["users[0].hair.color", "users[1].hair.color", "users[2].hair.color"]
-            .iter()
-            .enumerate()
+        for (offset, field_path) in [
+            "users[0].hair.color",
+            "users[1].hair.color",
+            "users[2].hair.color",
+        ]
+        .iter()
+        .enumerate()
         {
             let access = FieldAccessRecordInput {
                 ref_id: "dtk_index_1".to_string(),
@@ -4020,11 +4054,9 @@ mod tests {
             record_field_access(&store_dir, &access).expect("field access");
         }
 
-        let recommendations = load_config_recommendations(
-            &store_dir,
-            RecommendationThresholds::default(),
-        )
-        .expect("recommendations");
+        let recommendations =
+            load_config_recommendations(&store_dir, RecommendationThresholds::default())
+                .expect("recommendations");
         assert!(recommendations.iter().any(|recommendation| {
             recommendation.recommendation_kind == "expand_allowlist"
                 && recommendation.field_path.as_deref() == Some("users[].hair.color")
