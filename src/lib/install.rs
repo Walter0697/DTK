@@ -1,7 +1,9 @@
-use crate::{
-    default_config_dir, AgentInstallReport, AgentTarget, DTK_CONFIG_ASSISTANT_SKILL, DTK_GUIDE,
-    DUMMYJSON_USERS_CONFIG, KUBERNETES_DEPLOYMENT_YAML_CONFIG, KUBERNETES_DEPLOYMENT_YAML_PAYLOAD,
-};
+mod claude;
+mod codex;
+mod cursor;
+mod samples;
+
+use crate::{AgentInstallReport, AgentTarget};
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -22,20 +24,20 @@ pub fn uninstall_agent_guidance(target: AgentTarget) -> io::Result<AgentInstallR
 
     match target {
         AgentTarget::All => {
-            changed |= uninstall_codex_guidance()?;
-            changed |= uninstall_codex_agents_attachment()?;
-            changed |= uninstall_claude_guidance()?;
-            changed |= uninstall_cursor_guidance()?;
+            changed |= codex::uninstall_codex_guidance()?;
+            changed |= codex::uninstall_codex_agents_attachment()?;
+            changed |= claude::uninstall_claude_guidance()?;
+            changed |= cursor::uninstall_cursor_guidance()?;
         }
         AgentTarget::Codex => {
-            changed |= uninstall_codex_guidance()?;
-            changed |= uninstall_codex_agents_attachment()?;
+            changed |= codex::uninstall_codex_guidance()?;
+            changed |= codex::uninstall_codex_agents_attachment()?;
         }
         AgentTarget::Claude => {
-            changed |= uninstall_claude_guidance()?;
+            changed |= claude::uninstall_claude_guidance()?;
         }
         AgentTarget::Cursor => {
-            changed |= uninstall_cursor_guidance()?;
+            changed |= cursor::uninstall_cursor_guidance()?;
         }
     }
 
@@ -46,14 +48,14 @@ pub fn install_config_skill(target: AgentTarget) -> io::Result<bool> {
     match target {
         AgentTarget::All => {
             let mut changed = false;
-            changed |= install_codex_skill()?;
-            changed |= install_claude_skill()?;
-            changed |= install_cursor_skill()?;
+            changed |= codex::install_codex_skill()?;
+            changed |= claude::install_claude_skill()?;
+            changed |= cursor::install_cursor_skill()?;
             Ok(changed)
         }
-        AgentTarget::Codex => install_codex_skill(),
-        AgentTarget::Claude => install_claude_skill(),
-        AgentTarget::Cursor => install_cursor_skill(),
+        AgentTarget::Codex => codex::install_codex_skill(),
+        AgentTarget::Claude => claude::install_claude_skill(),
+        AgentTarget::Cursor => cursor::install_cursor_skill(),
     }
 }
 
@@ -117,130 +119,29 @@ fn install_agent_guidance_with_sample_set(
 
     match target {
         AgentTarget::All => {
-            changed |= install_codex_guidance()?;
-            changed |= install_codex_agents_attachment()?;
-            changed |= install_claude_guidance()?;
-            changed |= install_cursor_guidance()?;
+            changed |= codex::install_codex_guidance()?;
+            changed |= codex::install_codex_agents_attachment()?;
+            changed |= claude::install_claude_guidance()?;
+            changed |= cursor::install_cursor_guidance()?;
         }
         AgentTarget::Codex => {
-            changed |= install_codex_guidance()?;
-            changed |= install_codex_agents_attachment()?;
+            changed |= codex::install_codex_guidance()?;
+            changed |= codex::install_codex_agents_attachment()?;
         }
         AgentTarget::Claude => {
-            changed |= install_claude_guidance()?;
+            changed |= claude::install_claude_guidance()?;
         }
         AgentTarget::Cursor => {
-            changed |= install_cursor_guidance()?;
+            changed |= cursor::install_cursor_guidance()?;
         }
     }
 
-    changed |= install_default_sample_configs()?;
+    changed |= samples::install_default_sample_configs()?;
     if install_dummy_samples {
-        changed |= install_dummy_sample_configs()?;
+        changed |= samples::install_dummy_sample_configs()?;
     }
 
     Ok(AgentInstallReport { changed })
-}
-
-fn install_codex_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(codex_dir().join("DTK.md"), DTK_GUIDE)?;
-    Ok(changed)
-}
-
-fn uninstall_codex_guidance() -> io::Result<bool> {
-    remove_if_exists(codex_dir().join("DTK.md"))
-}
-
-fn install_codex_agents_attachment() -> io::Result<bool> {
-    let path = codex_dir().join("AGENTS.md");
-    let guide_path = codex_dir().join("DTK.md");
-    let include_line = format!("@{}", guide_path.display());
-    normalize_codex_agents(path, Some(include_line), None)
-}
-
-fn uninstall_codex_agents_attachment() -> io::Result<bool> {
-    let path = codex_dir().join("AGENTS.md");
-    let guide_path = codex_dir().join("DTK.md");
-    let remove_line = format!("@{}", guide_path.display());
-    normalize_codex_agents(path, None, Some(remove_line))
-}
-
-fn install_codex_skill() -> io::Result<bool> {
-    install_text_file(
-        codex_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_CONFIG_ASSISTANT_SKILL,
-    )
-}
-
-fn install_claude_skill() -> io::Result<bool> {
-    install_text_file(
-        claude_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_CONFIG_ASSISTANT_SKILL,
-    )
-}
-
-fn install_cursor_skill() -> io::Result<bool> {
-    install_text_file(
-        cursor_dir().join("skills").join("dtk").join("SKILL.md"),
-        DTK_CONFIG_ASSISTANT_SKILL,
-    )
-}
-
-fn install_claude_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(claude_dir().join("DTK.md"), DTK_GUIDE)?;
-    changed |= ensure_claude_instructions()?;
-    Ok(changed)
-}
-
-fn uninstall_claude_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= remove_if_exists(claude_dir().join("DTK.md"))?;
-    changed |= remove_claude_instructions()?;
-    changed |= remove_if_exists(claude_dir().join("hooks").join("dtk-rewrite.sh"))?;
-    changed |= remove_claude_hooks()?;
-    Ok(changed)
-}
-
-fn install_cursor_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(cursor_dir().join("DTK.md"), DTK_GUIDE)?;
-    Ok(changed)
-}
-
-fn install_default_sample_configs() -> io::Result<bool> {
-    install_text_file(
-        default_config_dir()
-            .join("configs")
-            .join("dummyjson_users.json"),
-        DUMMYJSON_USERS_CONFIG,
-    )
-}
-
-fn install_dummy_sample_configs() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(
-        default_config_dir()
-            .join("configs")
-            .join("kubernetes_deployment.yaml.json"),
-        KUBERNETES_DEPLOYMENT_YAML_CONFIG,
-    )?;
-    changed |= install_text_file(
-        default_config_dir()
-            .join("samples")
-            .join("kubernetes_deployment.yaml"),
-        KUBERNETES_DEPLOYMENT_YAML_PAYLOAD,
-    )?;
-    Ok(changed)
-}
-
-fn uninstall_cursor_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= remove_if_exists(cursor_dir().join("DTK.md"))?;
-    changed |= remove_cursor_hooks()?;
-    changed |= remove_if_exists(cursor_dir().join("hooks").join("dtk-rewrite.sh"))?;
-    Ok(changed)
 }
 
 fn platform_codex_dir() -> PathBuf {
@@ -292,150 +193,6 @@ fn remove_if_exists(path: PathBuf) -> io::Result<bool> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
     }
-}
-
-fn ensure_claude_instructions() -> io::Result<bool> {
-    let claude_md = claude_dir().join("CLAUDE.md");
-    let line = "@DTK.md";
-    let existing = fs::read_to_string(&claude_md).unwrap_or_default();
-    if existing
-        .lines()
-        .any(|existing_line| existing_line.trim() == line)
-    {
-        return Ok(false);
-    }
-
-    let mut next = existing.trim_end().to_string();
-    if !next.is_empty() {
-        next.push('\n');
-    }
-    next.push_str(line);
-    next.push('\n');
-    install_text_file(claude_md, &next)
-}
-
-fn remove_claude_hooks() -> io::Result<bool> {
-    let settings_path = claude_dir().join("settings.json");
-    let mut root = match load_json_file(&settings_path) {
-        Ok(value) => value,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
-    };
-
-    let Some(hooks) = root
-        .as_object_mut()
-        .and_then(|map| map.get_mut("hooks"))
-        .and_then(Value::as_object_mut)
-    else {
-        return Ok(false);
-    };
-
-    let Some(pre_tool_use) = hooks.get_mut("PreToolUse") else {
-        return Ok(false);
-    };
-    let Some(entries) = pre_tool_use.as_array_mut() else {
-        return Ok(false);
-    };
-
-    let before = entries.len();
-    entries.retain(|entry| {
-        let Some(hooks) = entry.get("hooks").and_then(Value::as_array) else {
-            return true;
-        };
-        !hooks.iter().any(|hook| {
-            hook.get("command")
-                .and_then(Value::as_str)
-                .map(|command| command.contains("dtk-rewrite.sh"))
-                .unwrap_or(false)
-        })
-    });
-
-    if entries.len() == before {
-        return Ok(false);
-    }
-
-    if hooks_are_empty(hooks) {
-        if settings_path.exists() {
-            fs::remove_file(&settings_path)?;
-        }
-        return Ok(true);
-    }
-
-    write_json_file(&settings_path, &root)?;
-    Ok(true)
-}
-
-fn remove_claude_instructions() -> io::Result<bool> {
-    let claude_md = claude_dir().join("CLAUDE.md");
-    let existing = match fs::read_to_string(&claude_md) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
-    };
-
-    let filtered: Vec<&str> = existing
-        .lines()
-        .filter(|line| line.trim() != "@DTK.md")
-        .collect();
-
-    let next = filtered.join("\n");
-    if next.trim().is_empty() {
-        if claude_md.exists() {
-            fs::remove_file(&claude_md)?;
-            return Ok(true);
-        }
-        return Ok(false);
-    }
-
-    let next = format!("{next}\n");
-    install_text_file(claude_md, &next)
-}
-
-fn remove_cursor_hooks() -> io::Result<bool> {
-    let hooks_path = cursor_dir().join("hooks.json");
-    let mut root = match load_json_file(&hooks_path) {
-        Ok(value) => value,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
-    };
-
-    let Some(hooks) = root
-        .as_object_mut()
-        .and_then(|map| map.get_mut("hooks"))
-        .and_then(Value::as_object_mut)
-    else {
-        return Ok(false);
-    };
-
-    let Some(pre_tool_use) = hooks.get_mut("preToolUse") else {
-        return Ok(false);
-    };
-    let Some(entries) = pre_tool_use.as_array_mut() else {
-        return Ok(false);
-    };
-
-    let before = entries.len();
-    entries.retain(|entry| {
-        entry
-            .get("command")
-            .and_then(Value::as_str)
-            .map(|command| command != "./hooks/dtk-rewrite.sh")
-            .unwrap_or(true)
-    });
-
-    if entries.len() == before {
-        return Ok(false);
-    }
-
-    if hooks_are_empty(hooks) {
-        if hooks_path.exists() {
-            fs::remove_file(&hooks_path)?;
-        }
-        return Ok(true);
-    }
-
-    write_json_file(&hooks_path, &root)?;
-    Ok(true)
 }
 
 fn hooks_are_empty(hooks: &serde_json::Map<String, Value>) -> bool {
