@@ -25,7 +25,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `cargo run --quiet --bin dtk_retrieve_json -- <ref_id> [fields]`
 - `cargo run --quiet --bin dtk_cleanup_store`
 - `cargo run --quiet --bin dtk_cleanup_store -- --dry-run`
-- `dtk exec --config <config.json> -- <command> [args...]`
+- `dtk exec -- <command> [args...]`
 - `dtk retrieve <ref_id> [fields] [--index N | --all]`
 - `dtk config list`
 - `dtk config allow add <config> <field>`
@@ -110,50 +110,42 @@ RTK and DTK are complementary:
 Examples:
 
 ```bash
-dtk exec --config n8n_workflows_list.json -- \
-  curl -sS -H "X-N8N-API-KEY: $N8N_API_TOKEN" "$N8N_BASE_URL/api/v1/workflows?limit=3"
-
-dtk exec -- \
-  curl -sS https://dummyjson.com/users
-
-dtk exec --config kubectl_pods.yaml.json -- \
-  kubectl get pods -o yaml
-
-dtk exec --config cargo_lock_packages.toml.json -- \
-  cat Cargo.lock
-
-dtk exec --config pyproject_manifest.toml.json -- \
-  cat pyproject.toml
-
-dtk exec --config xaml_resource_dictionary.xaml.json -- \
-  cat App.xaml
+dtk exec -- curl -sS -H "X-N8N-API-KEY: $N8N_API_TOKEN" "$N8N_BASE_URL/api/v1/workflows?limit=3"
+dtk exec -- curl -sS https://dummyjson.com/users
+dtk exec -- kubectl get pods -o yaml
+dtk exec -- cat Cargo.lock
+dtk exec -- cat pyproject.toml
+dtk exec -- cat App.xaml
+```
 
 CSV is useful for inventory exports and other repeated tabular payloads:
 
-dtk exec --config csv_inventory_export.csv.json -- \
-  cat inventory.csv
+```bash
+dtk exec -- cat inventory.csv
+```
 
 INI is useful for repeated section-based configs:
 
-dtk exec --config ini_plugin_registry.ini.json -- \
-  cat plugins.ini
+```bash
+dtk exec -- cat plugins.ini
+```
 
 XML is useful for repeated nested feeds and manifests:
 
-dtk exec --config xml_rss_feed.xml.json -- \
-  cat feed.xml
+```bash
+dtk exec -- cat feed.xml
+```
 
 HCL is useful for repeated Terraform module variables:
 
-dtk exec --config terraform_module_variables.tf.json -- \
-  cat variables.tf
+```bash
+dtk exec -- cat variables.tf
+```
 
+```bash
 dtk retrieve dtk_1234567890abcdef users[].address,users[].age
-
 dtk retrieve dtk_1234567890abcdef name --index 0
-
 dtk retrieve dtk_1234567890abcdef name --all
-
 dtk retrieve dtk_1234567890abcdef users[0].firstName,users[0].lastName
 ```
 
@@ -163,17 +155,18 @@ Recommended flow:
 
 1. The user provides a command, curl URL, or API response.
 2. The DTK Config Assistant inspects the payload and asks what matters, using `_dtk.available_fields` and `_dtk.content_path` when available.
-3. DTK writes a reusable source config under `~/.config/dtk/configs/` when needed.
+3. DTK writes a reusable source config under `~/.config/dtk/configs/` when needed and registers a matching hook rule.
 4. `dtk exec` is used when you want to run the command through DTK and store the original response.
-5. Before changing a config, run `dtk config list` to confirm the installed identifier you should target.
-6. After a config exists, use DTK-native config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
-7. When `dtk retrieve` or `dtk exec` emits a `DTK recommendation:` notice, treat that as a prompt to ask the user whether to add or remove specific fields from the config, or remove the config entirely if it is not reducing token usage enough for the endpoint. Include the concrete follow-up command in the message: `dtk config list` first, then `dtk config allow add <config> <field>`, `dtk config allow remove <config> <field>`, or `dtk config delete <config>` as appropriate.
-8. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
+5. DTK resolves the matching config from the command shape, so the user does not need to name the config explicitly in normal use.
+6. If the command shape is ambiguous, ask the user whether a second endpoint or command should be run once more to confirm the schema boundary.
+7. After a config exists, use DTK-native config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
+8. When `dtk retrieve` or `dtk exec` emits a `DTK recommendation:` notice, treat that as a prompt to ask the user whether to add or remove specific fields from the config, or remove the config entirely if it is not reducing token usage enough for the endpoint. Include the concrete follow-up command in the message: `dtk config list` first, then `dtk config allow add <config> <field>`, `dtk config allow remove <config> <field>`, or `dtk config delete <config>` as appropriate.
+9. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
    Example:
 
 ```bash
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
-9. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
-10. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint, and include the exact DTK config command they should run next.
-11. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.
+10. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
+11. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint, and include the exact DTK config command they should run next.
+12. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.
