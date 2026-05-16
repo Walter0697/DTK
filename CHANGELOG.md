@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/Walter0697/DTK/compare/v0.0.2...v0.0.3) - 2026-05-16
+
+### Added
+
+- add multi-format dummy sample support ([#6](https://github.com/Walter0697/DTK/pull/6))
+
 ### Added
 
 - add TOML, YAML, and XAML command-output support to `dtk exec`
