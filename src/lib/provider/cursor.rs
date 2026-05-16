@@ -3,8 +3,8 @@ use std::fs;
 use std::io;
 
 use super::template::{
-    cursor_dir, hooks_are_empty, install_text_file, load_json_file, remove_if_exists,
-    write_json_file, ProviderTemplate,
+    cursor_dir, hooks_are_empty, load_json_file, remove_if_exists, write_json_file,
+    ProviderTemplate,
 };
 
 struct CursorProvider;

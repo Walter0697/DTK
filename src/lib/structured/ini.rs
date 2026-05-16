@@ -1,12 +1,9 @@
 use super::template::{parse_scalar_value, parse_trimmed, push_named_value, StructuredParser};
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) struct IniParser;
 
 impl StructuredParser for IniParser {
-    const FORMAT: StructuredFormat = StructuredFormat::Ini;
-
     fn parse(text: &str) -> Option<Value> {
         parse_trimmed(text, parse_ini_payload)
     }

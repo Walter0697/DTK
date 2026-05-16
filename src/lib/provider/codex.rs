@@ -1,6 +1,6 @@
 use std::io;
 
-use super::template::{codex_dir, normalize_codex_agents, remove_if_exists, ProviderTemplate};
+use super::template::{codex_dir, normalize_codex_agents, ProviderTemplate};
 
 struct CodexProvider;
 

@@ -1,12 +1,9 @@
 use super::template::{parse_trimmed, StructuredParser};
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) struct TomlParser;
 
 impl StructuredParser for TomlParser {
-    const FORMAT: StructuredFormat = StructuredFormat::Toml;
-
     fn parse(text: &str) -> Option<Value> {
         parse_trimmed(text, |stripped| {
             toml::from_str::<toml::Value>(stripped)

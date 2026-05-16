@@ -1,9 +1,6 @@
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) trait StructuredParser {
-    const FORMAT: StructuredFormat;
-
     fn parse(text: &str) -> Option<Value>;
 }
 

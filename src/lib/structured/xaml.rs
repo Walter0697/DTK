@@ -1,12 +1,9 @@
 use super::template::{parse_trimmed, StructuredParser};
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) struct XamlParser;
 
 impl StructuredParser for XamlParser {
-    const FORMAT: StructuredFormat = StructuredFormat::Xaml;
-
     fn parse(text: &str) -> Option<Value> {
         parse_trimmed(text, parse_xaml_payload)
     }

@@ -1,12 +1,9 @@
 use super::template::{json_object_or_array, parse_trimmed, StructuredParser};
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) struct JsonParser;
 
 impl StructuredParser for JsonParser {
-    const FORMAT: StructuredFormat = StructuredFormat::Json;
-
     fn parse(text: &str) -> Option<Value> {
         parse_trimmed(text, |stripped| {
             serde_json::from_str::<Value>(stripped)

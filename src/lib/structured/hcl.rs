@@ -1,12 +1,9 @@
 use super::template::{parse_scalar_value, parse_trimmed, push_named_value, StructuredParser};
-use crate::StructuredFormat;
 use serde_json::Value;
 
 pub(crate) struct HclParser;
 
 impl StructuredParser for HclParser {
-    const FORMAT: StructuredFormat = StructuredFormat::Hcl;
-
     fn parse(text: &str) -> Option<Value> {
         parse_trimmed(text, parse_hcl_payload)
     }
