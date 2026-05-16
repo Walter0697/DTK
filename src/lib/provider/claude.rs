@@ -1,30 +1,34 @@
-use crate::DTK_GUIDE;
 use serde_json::Value;
 use std::fs;
 use std::io;
 
-use super::{
+use super::template::{
     claude_dir, hooks_are_empty, install_text_file, load_json_file, remove_if_exists,
-    write_json_file,
+    write_json_file, ProviderTemplate,
 };
 
+struct ClaudeProvider;
+
+impl ProviderTemplate for ClaudeProvider {
+    fn base_dir() -> std::path::PathBuf {
+        claude_dir()
+    }
+}
+
 pub(crate) fn install_claude_skill() -> io::Result<bool> {
-    install_text_file(
-        claude_dir().join("skills").join("dtk").join("SKILL.md"),
-        crate::DTK_CONFIG_ASSISTANT_SKILL,
-    )
+    ClaudeProvider::install_skill_file()
 }
 
 pub(crate) fn install_claude_guidance() -> io::Result<bool> {
     let mut changed = false;
-    changed |= install_text_file(claude_dir().join("DTK.md"), DTK_GUIDE)?;
+    changed |= ClaudeProvider::install_guidance_file()?;
     changed |= ensure_claude_instructions()?;
     Ok(changed)
 }
 
 pub(crate) fn uninstall_claude_guidance() -> io::Result<bool> {
     let mut changed = false;
-    changed |= remove_if_exists(claude_dir().join("DTK.md"))?;
+    changed |= ClaudeProvider::uninstall_guidance_file()?;
     changed |= remove_claude_instructions()?;
     changed |= remove_if_exists(claude_dir().join("hooks").join("dtk-rewrite.sh"))?;
     changed |= remove_claude_hooks()?;

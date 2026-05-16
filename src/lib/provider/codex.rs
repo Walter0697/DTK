@@ -1,16 +1,21 @@
-use crate::DTK_GUIDE;
 use std::io;
 
-use super::{codex_dir, install_text_file, normalize_codex_agents, remove_if_exists};
+use super::template::{codex_dir, normalize_codex_agents, remove_if_exists, ProviderTemplate};
+
+struct CodexProvider;
+
+impl ProviderTemplate for CodexProvider {
+    fn base_dir() -> std::path::PathBuf {
+        codex_dir()
+    }
+}
 
 pub(crate) fn install_codex_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(codex_dir().join("DTK.md"), DTK_GUIDE)?;
-    Ok(changed)
+    CodexProvider::install_guidance_file()
 }
 
 pub(crate) fn uninstall_codex_guidance() -> io::Result<bool> {
-    remove_if_exists(codex_dir().join("DTK.md"))
+    CodexProvider::uninstall_guidance_file()
 }
 
 pub(crate) fn install_codex_agents_attachment() -> io::Result<bool> {
@@ -28,8 +33,5 @@ pub(crate) fn uninstall_codex_agents_attachment() -> io::Result<bool> {
 }
 
 pub(crate) fn install_codex_skill() -> io::Result<bool> {
-    install_text_file(
-        codex_dir().join("skills").join("dtk").join("SKILL.md"),
-        crate::DTK_CONFIG_ASSISTANT_SKILL,
-    )
+    CodexProvider::install_skill_file()
 }

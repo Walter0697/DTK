@@ -1,29 +1,31 @@
-use crate::DTK_GUIDE;
 use serde_json::Value;
 use std::fs;
 use std::io;
 
-use super::{
+use super::template::{
     cursor_dir, hooks_are_empty, install_text_file, load_json_file, remove_if_exists,
-    write_json_file,
+    write_json_file, ProviderTemplate,
 };
 
+struct CursorProvider;
+
+impl ProviderTemplate for CursorProvider {
+    fn base_dir() -> std::path::PathBuf {
+        cursor_dir()
+    }
+}
+
 pub(crate) fn install_cursor_skill() -> io::Result<bool> {
-    install_text_file(
-        cursor_dir().join("skills").join("dtk").join("SKILL.md"),
-        crate::DTK_CONFIG_ASSISTANT_SKILL,
-    )
+    CursorProvider::install_skill_file()
 }
 
 pub(crate) fn install_cursor_guidance() -> io::Result<bool> {
-    let mut changed = false;
-    changed |= install_text_file(cursor_dir().join("DTK.md"), DTK_GUIDE)?;
-    Ok(changed)
+    CursorProvider::install_guidance_file()
 }
 
 pub(crate) fn uninstall_cursor_guidance() -> io::Result<bool> {
     let mut changed = false;
-    changed |= remove_if_exists(cursor_dir().join("DTK.md"))?;
+    changed |= CursorProvider::uninstall_guidance_file()?;
     changed |= remove_cursor_hooks()?;
     changed |= remove_if_exists(cursor_dir().join("hooks").join("dtk-rewrite.sh"))?;
     Ok(changed)
