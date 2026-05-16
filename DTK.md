@@ -11,6 +11,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - accepts TOML tables and arrays of tables
 - accepts Terraform-style HCL blocks
 - accepts XAML / XML documents
+- presents supported structured outputs as JSON-shaped data to the agent
 - filters fields with allowlist rules
 - stores the original payload locally for recovery
 - adds `_dtk` metadata with a `ref_id`, field inventory, and content path hints
@@ -104,6 +105,7 @@ RTK and DTK are complementary:
 - Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
 - For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
+- The agent-facing payload surface is JSON-shaped even when the source data started as YAML, TOML, HCL, CSV, INI, XML, or XAML.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
 - Do not default to `rtk proxy` for curl/API/JSON flows when `dtk` can handle them.
 
