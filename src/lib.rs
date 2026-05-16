@@ -129,6 +129,7 @@ pub struct FilterConfig {
 pub enum PiiAction {
     Mask,
     Uuid,
+    Replace,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -149,6 +150,8 @@ pub struct PiiRule {
     pub method: Option<PiiUuidMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -40,7 +40,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
    - Stable filters or scoping flags that do not change the payload shape, such as `kubectl get configmap --namespace ...`, can usually share the same config.
 5. Ask the user which fields are required, optional, or sensitive.
    - If the schema boundary is unclear, ask whether you should run another endpoint or command once more to confirm the shape.
-   - If obvious PII fields appear, ask whether a PII config should be applied for masking or deterministic UUID replacement.
+   - If obvious PII fields appear, ask whether a PII config should be applied for masking, deterministic UUID replacement, or template-based field replacement.
 6. Propose an allowlist with minimal safe defaults.
 7. Generate or update config JSON with:
    - `name`
@@ -79,6 +79,7 @@ When updating an existing installed config after creation, prefer DTK-native con
 - PII rules apply after allowlisting and also affect `dtk retrieve`, so retrieved fields stay sanitized the same way as the emitted payload.
 - Use `mask` with a default replacement of `[PII INFORMATION]` unless the user wants a different token.
 - Use `uuid` when the user wants deterministic synthetic identifiers or templated replacements.
+- Use `replace` when the user wants to rebuild a field from sibling fields, such as `email` from `firstName` and `lastName`.
 - Use the command prefix to match the stable command family, and use contains checks only when a specific flag must be required.
 - Use `dtk retrieve` when you need to project specific fields back out of a stored payload.
 - Use nested indexes like `users[0].firstName` when you need a single array element from a nested array.

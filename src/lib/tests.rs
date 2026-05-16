@@ -1837,6 +1837,64 @@ fn applies_pii_rules_after_filtering() {
 }
 
 #[test]
+fn replaces_values_from_sibling_fields_with_template() {
+    let value = parse_json_payload(
+        r#"{"users":[{"email":"ada@example.com","firstName":"Ada","lastName":"Lovelace","phone":"+1-555-1234"}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].email", "users[].firstName", "users[].lastName", "users[].phone"],
+        "pii": [
+            {
+                "path": "users[].email",
+                "action": "replace",
+                "source_fields": ["firstName", "lastName"],
+                "template": "{firstName}.{lastName}@example.com"
+            },
+            {
+                "path": "users[].phone",
+                "action": "uuid",
+                "method": "template",
+                "template": "DTK-PHONE-{uuid}"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    let users = filtered["users"].as_array().expect("users array");
+    let user = users.first().expect("user row");
+    let email = user["email"].as_str().expect("email string");
+    let phone = user["phone"].as_str().expect("phone string");
+
+    assert_eq!(email, "Ada.Lovelace@example.com");
+    assert!(phone.starts_with("DTK-PHONE-"));
+
+    let reapplied = apply_pii_transform(
+        &retrieve_json_payload(
+            &value,
+            &[
+                "users[].email".to_string(),
+                "users[].firstName".to_string(),
+                "users[].lastName".to_string(),
+                "users[].phone".to_string(),
+            ],
+            None,
+            false,
+        )
+        .expect("expected retrieve"),
+        &config,
+    );
+
+    assert_eq!(reapplied["users"][0]["email"], "Ada.Lovelace@example.com");
+    assert!(reapplied["users"][0]["phone"]
+        .as_str()
+        .expect("phone string")
+        .starts_with("DTK-PHONE-"));
+}
+
+#[test]
 fn applies_deterministic_uuid_and_wildcard_precedence_to_all_array_items() {
     let value = parse_json_payload(
         r#"{"users":[{"email":"ada@example.com","ssn":5},{"email":"grace@example.com","ssn":42}]}"#,

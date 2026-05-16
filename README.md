@@ -190,6 +190,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
 That makes the config more accurate than hardcoding one guess up front.
 
 PII handling is optional and config-driven. When present, DTK applies it after allowlisting and also when `dtk retrieve` projects fields back out of the stored payload. The default mask token is `[PII INFORMATION]`, but each rule can override it.
+`uuid` is useful for deterministic synthetic identifiers, while `replace` is useful when a field should be reconstructed from sibling values, such as `email` from `firstName` and `lastName`.
 
 ## RTK vs DTK
 

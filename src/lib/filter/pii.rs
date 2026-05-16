@@ -4,6 +4,7 @@ use super::patterns::{
 use crate::{FilterConfig, PiiAction, PiiRule, PiiUuidMethod};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,7 @@ struct TemplateContext {
     path: String,
     hash: String,
     uuid: String,
+    sources: BTreeMap<String, String>,
 }
 
 pub fn apply_pii_transform(value: &Value, config: &FilterConfig) -> Value {
@@ -38,7 +40,7 @@ pub fn apply_pii_transform(value: &Value, config: &FilterConfig) -> Value {
         return value.clone();
     }
 
-    transform_value(value, &[], &rules)
+    transform_value(value, &[], None, &rules)
 }
 
 fn compile_rules(config: &FilterConfig) -> Vec<CompiledPiiRule> {
@@ -81,6 +83,7 @@ fn rule_specificity(pattern: &PathPattern) -> RuleSpecificity {
 fn transform_value(
     value: &Value,
     current_path: &[PathSegment],
+    parent_context: Option<&Value>,
     rules: &[CompiledPiiRule],
 ) -> Value {
     match value {
@@ -89,7 +92,10 @@ fn transform_value(
             for (key, child) in map {
                 let mut child_path = current_path.to_vec();
                 child_path.push(PathSegment::Key(key.clone()));
-                transformed.insert(key.clone(), transform_value(child, &child_path, rules));
+                transformed.insert(
+                    key.clone(),
+                    transform_value(child, &child_path, Some(value), rules),
+                );
             }
             Value::Object(transformed)
         }
@@ -98,13 +104,13 @@ fn transform_value(
             for (index, child) in items.iter().enumerate() {
                 let mut child_path = current_path.to_vec();
                 child_path.push(PathSegment::Index(index));
-                transformed.push(transform_value(child, &child_path, rules));
+                transformed.push(transform_value(child, &child_path, Some(value), rules));
             }
             Value::Array(transformed)
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
             match select_best_rule(current_path, rules) {
-                Some(rule) => transform_scalar(value, current_path, rule),
+                Some(rule) => transform_scalar(value, current_path, parent_context, rule),
                 None => value.clone(),
             }
         }
@@ -145,7 +151,12 @@ fn rule_better(left: &CompiledPiiRule, right: &CompiledPiiRule) -> bool {
     left.order > right.order
 }
 
-fn transform_scalar(value: &Value, current_path: &[PathSegment], rule: &CompiledPiiRule) -> Value {
+fn transform_scalar(
+    value: &Value,
+    current_path: &[PathSegment],
+    parent_context: Option<&Value>,
+    rule: &CompiledPiiRule,
+) -> Value {
     match rule.rule.action {
         PiiAction::Mask => Value::String(
             rule.rule
@@ -154,6 +165,12 @@ fn transform_scalar(value: &Value, current_path: &[PathSegment], rule: &Compiled
                 .unwrap_or_else(|| "[PII INFORMATION]".to_string()),
         ),
         PiiAction::Uuid => Value::String(render_uuid_value(value, current_path, rule)),
+        PiiAction::Replace => Value::String(render_replace_value(
+            value,
+            current_path,
+            parent_context,
+            rule,
+        )),
     }
 }
 
@@ -184,10 +201,89 @@ fn render_uuid_value(
                 path,
                 hash: hash_hex(&base_seed),
                 uuid: deterministic_uuid,
+                sources: BTreeMap::new(),
             };
             render_template(rule.rule.template.as_deref().unwrap_or("{uuid}"), &context)
         }
     }
+}
+
+fn render_replace_value(
+    value: &Value,
+    current_path: &[PathSegment],
+    parent_context: Option<&Value>,
+    rule: &CompiledPiiRule,
+) -> String {
+    let raw_value = scalar_to_string(value);
+    let path = render_field_path(current_path);
+    let base_seed = format!("{}|{}|{}", rule.rule.path.trim(), path, raw_value);
+    let sources = resolve_source_fields(parent_context, &rule.rule.source_fields);
+
+    let context = TemplateContext {
+        value: raw_value,
+        path,
+        hash: hash_hex(&base_seed),
+        uuid: uuid_like_from_seed(&base_seed),
+        sources,
+    };
+
+    let template = rule.rule.template.as_deref().unwrap_or_default();
+    if template.trim().is_empty() {
+        if context.sources.is_empty() {
+            context.value
+        } else {
+            context
+                .sources
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    } else {
+        render_template(template, &context)
+    }
+}
+
+fn resolve_source_fields(
+    parent_context: Option<&Value>,
+    source_fields: &[String],
+) -> BTreeMap<String, String> {
+    let mut resolved = BTreeMap::new();
+    let Some(parent_context) = parent_context else {
+        return resolved;
+    };
+
+    for field in source_fields {
+        let key = field.trim();
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(value) = resolve_relative_value(parent_context, key) {
+            resolved.insert(key.to_string(), value);
+        }
+    }
+
+    resolved
+}
+
+fn resolve_relative_value(value: &Value, field: &str) -> Option<String> {
+    let pattern = PathPattern::parse(field);
+    let resolved = resolve_pattern_value(value, &pattern.segments)?;
+    Some(scalar_to_string(&resolved))
+}
+
+fn resolve_pattern_value<'a>(value: &'a Value, segments: &[PathSegment]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in segments {
+        current = match (segment, current) {
+            (PathSegment::Key(key), Value::Object(map)) => map.get(key)?,
+            (PathSegment::Index(index), Value::Array(items)) => items.get(*index)?,
+            (PathSegment::AnyIndex, Value::Array(items)) => items.first()?,
+            (PathSegment::AnyDescendant, _) => return Some(current),
+            _ => return None,
+        };
+    }
+    Some(current)
 }
 
 fn render_template(template: &str, context: &TemplateContext) -> String {
@@ -238,7 +334,11 @@ fn render_placeholder(placeholder: &str, context: &TemplateContext) -> String {
         "path" => context.path.clone(),
         "hash" => context.hash.clone(),
         "uuid" => context.uuid.clone(),
-        _ => format!("{{{placeholder}}}"),
+        other => context
+            .sources
+            .get(other)
+            .cloned()
+            .unwrap_or_else(|| format!("{{{placeholder}}}")),
     }
 }
 
