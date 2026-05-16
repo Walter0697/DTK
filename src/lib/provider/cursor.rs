@@ -8,20 +8,20 @@ use super::{
     write_json_file,
 };
 
-pub(super) fn install_cursor_skill() -> io::Result<bool> {
+pub(crate) fn install_cursor_skill() -> io::Result<bool> {
     install_text_file(
         cursor_dir().join("skills").join("dtk").join("SKILL.md"),
         crate::DTK_CONFIG_ASSISTANT_SKILL,
     )
 }
 
-pub(super) fn install_cursor_guidance() -> io::Result<bool> {
+pub(crate) fn install_cursor_guidance() -> io::Result<bool> {
     let mut changed = false;
     changed |= install_text_file(cursor_dir().join("DTK.md"), DTK_GUIDE)?;
     Ok(changed)
 }
 
-pub(super) fn uninstall_cursor_guidance() -> io::Result<bool> {
+pub(crate) fn uninstall_cursor_guidance() -> io::Result<bool> {
     let mut changed = false;
     changed |= remove_if_exists(cursor_dir().join("DTK.md"))?;
     changed |= remove_cursor_hooks()?;

@@ -6,6 +6,8 @@ mod filter;
 mod install;
 #[path = "lib/paths.rs"]
 mod paths;
+#[path = "lib/provider/mod.rs"]
+mod provider;
 #[path = "lib/store.rs"]
 mod store;
 #[path = "lib/usage.rs"]

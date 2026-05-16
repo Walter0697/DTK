@@ -1,8 +1,6 @@
-mod claude;
-mod codex;
-mod cursor;
 mod samples;
 
+use crate::provider::{claude, codex, cursor};
 use crate::{AgentInstallReport, AgentTarget};
 use serde_json::Value;
 use std::fs;
@@ -144,6 +142,53 @@ fn install_agent_guidance_with_sample_set(
     Ok(AgentInstallReport { changed })
 }
 
+pub(crate) fn install_text_file(path: PathBuf, content: &str) -> io::Result<bool> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let changed = match fs::read_to_string(&path) {
+        Ok(existing) if existing == content => false,
+        _ => {
+            fs::write(&path, content)?;
+            true
+        }
+    };
+
+    Ok(changed)
+}
+
+pub(crate) fn remove_if_exists(path: PathBuf) -> io::Result<bool> {
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+pub(crate) fn hooks_are_empty(hooks: &serde_json::Map<String, Value>) -> bool {
+    hooks.values().all(|value| match value {
+        Value::Array(items) => items.is_empty(),
+        _ => false,
+    })
+}
+
+pub(crate) fn load_json_file(path: &Path) -> io::Result<Value> {
+    let content = fs::read_to_string(path)?;
+    serde_json::from_str::<Value>(&content)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("invalid json: {err}")))
+}
+
+pub(crate) fn write_json_file(path: &Path, value: &Value) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(value).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("invalid json: {err}"))
+    })?;
+    fs::write(path, content)
+}
+
 fn platform_codex_dir() -> PathBuf {
     if cfg!(windows) {
         windows_codex_dir()
@@ -171,53 +216,6 @@ fn windows_codex_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".codex"))
 }
 
-fn install_text_file(path: PathBuf, content: &str) -> io::Result<bool> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let changed = match fs::read_to_string(&path) {
-        Ok(existing) if existing == content => false,
-        _ => {
-            fs::write(&path, content)?;
-            true
-        }
-    };
-
-    Ok(changed)
-}
-
-fn remove_if_exists(path: PathBuf) -> io::Result<bool> {
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
-    }
-}
-
-fn hooks_are_empty(hooks: &serde_json::Map<String, Value>) -> bool {
-    hooks.values().all(|value| match value {
-        Value::Array(items) => items.is_empty(),
-        _ => false,
-    })
-}
-
-fn load_json_file(path: &Path) -> io::Result<Value> {
-    let content = fs::read_to_string(path)?;
-    serde_json::from_str::<Value>(&content)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("invalid json: {err}")))
-}
-
-fn write_json_file(path: &Path, value: &Value) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let content = serde_json::to_string_pretty(value).map_err(|err| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("invalid json: {err}"))
-    })?;
-    fs::write(path, content)
-}
-
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
@@ -225,7 +223,7 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn normalize_codex_agents(
+pub(crate) fn normalize_codex_agents(
     path: PathBuf,
     include_line: Option<String>,
     remove_line: Option<String>,
