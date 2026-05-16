@@ -30,6 +30,10 @@ const CARGO_LOCK_PACKAGES_PAYLOAD: &str =
 const PYPROJECT_MANIFEST_CONFIG: &str =
     include_str!("../samples/config.pyproject_manifest.toml.json");
 const PYPROJECT_MANIFEST_PAYLOAD: &str = include_str!("../samples/payload.pyproject_manifest.toml");
+const XAML_RESOURCE_DICTIONARY_CONFIG: &str =
+    include_str!("../samples/config.xaml_resource_dictionary.xaml.json");
+const XAML_RESOURCE_DICTIONARY_PAYLOAD: &str =
+    include_str!("../samples/payload.xaml_resource_dictionary.xaml");
 const KUBERNETES_DEPLOYMENT_YAML_CONFIG: &str =
     include_str!("../samples/config.kubernetes.deployment.yaml.json");
 const KUBERNETES_DEPLOYMENT_YAML_PAYLOAD: &str =
@@ -39,6 +43,7 @@ const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 pub const CARGO_LOCK_SAMPLE_CONFIG_NAME: &str = "cargo_lock_packages.toml.json";
 pub const PYPROJECT_SAMPLE_CONFIG_NAME: &str = "pyproject_manifest.toml.json";
+pub const XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME: &str = "xaml_resource_dictionary.xaml.json";
 pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -99,6 +104,7 @@ pub enum StructuredFormat {
     Json,
     Yaml,
     Toml,
+    Xaml,
 }
 
 impl StructuredFormat {
@@ -107,6 +113,7 @@ impl StructuredFormat {
             "json" => Some(Self::Json),
             "yaml" | "yml" => Some(Self::Yaml),
             "toml" => Some(Self::Toml),
+            "xaml" | "xml" => Some(Self::Xaml),
             _ => None,
         }
     }
@@ -281,9 +288,11 @@ pub fn parse_structured_payload_with_hint(
         Some(StructuredFormat::Json) => parse_json_payload(text),
         Some(StructuredFormat::Yaml) => parse_yaml_payload(text),
         Some(StructuredFormat::Toml) => parse_toml_payload(text),
+        Some(StructuredFormat::Xaml) => parse_xaml_payload(text),
         None => parse_json_payload(text)
             .or_else(|| parse_yaml_payload(text))
-            .or_else(|| parse_toml_payload(text)),
+            .or_else(|| parse_toml_payload(text))
+            .or_else(|| parse_xaml_payload(text)),
     }
 }
 
@@ -330,6 +339,70 @@ fn toml_value_to_json(value: toml::Value) -> Option<Value> {
             .collect::<Option<serde_json::Map<_, _>>>()
             .map(Value::Object),
     }
+}
+
+fn parse_xaml_payload(text: &str) -> Option<Value> {
+    let stripped = text.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+
+    let element = xmltree::Element::parse(stripped.as_bytes()).ok()?;
+    let value = xml_element_to_json(&element)?;
+    Some(Value::Object(serde_json::Map::from_iter([(
+        normalize_xml_name(&element.name),
+        value,
+    )])))
+}
+
+fn xml_element_to_json(element: &xmltree::Element) -> Option<Value> {
+    let mut map = serde_json::Map::new();
+
+    for (key, value) in &element.attributes {
+        if key.starts_with("xmlns") {
+            continue;
+        }
+
+        map.insert(normalize_xml_name(key), Value::String(value.clone()));
+    }
+
+    if let Some(text) = element.get_text() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            map.insert("text".to_string(), Value::String(trimmed.to_string()));
+        }
+    }
+
+    let mut grouped_children: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for child in &element.children {
+        let xmltree::XMLNode::Element(child_element) = child else {
+            continue;
+        };
+
+        let child_value = xml_element_to_json(child_element)?;
+        grouped_children
+            .entry(normalize_xml_name(&child_element.name))
+            .or_default()
+            .push(child_value);
+    }
+
+    for (name, values) in grouped_children {
+        if values.len() == 1 {
+            map.insert(name, values.into_iter().next().unwrap_or(Value::Null));
+        } else {
+            map.insert(name, Value::Array(values));
+        }
+    }
+
+    Some(Value::Object(map))
+}
+
+fn normalize_xml_name(name: &str) -> String {
+    name.trim()
+        .replace(':', "_")
+        .replace('.', "_")
+        .replace('/', "_")
 }
 
 pub fn stable_ref_id(raw_payload: &str) -> Option<String> {

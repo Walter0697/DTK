@@ -99,6 +99,11 @@ fn parses_structured_format_aliases() {
         parse_structured_format("toml"),
         Some(StructuredFormat::Toml)
     );
+    assert_eq!(
+        parse_structured_format("xaml"),
+        Some(StructuredFormat::Xaml)
+    );
+    assert_eq!(parse_structured_format("xml"), Some(StructuredFormat::Xaml));
     assert_eq!(parse_structured_format("csv"), None);
 }
 
@@ -190,6 +195,77 @@ fn json_format_hint_does_not_fallback_to_toml() {
 [[package]]
 name = "dtk"
 version = "0.0.2"
+"#;
+
+    assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
+}
+
+#[test]
+fn parses_structured_xaml_payload() {
+    let payload = r#"
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="PrimaryColor">#1E40AF</Color>
+  <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+    <Setter Property="Background" Value="{StaticResource PrimaryColor}" />
+  </Style>
+</ResourceDictionary>
+"#;
+
+    let parsed = parse_structured_payload(payload);
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "ResourceDictionary": {
+                "Color": {
+                    "Key": "PrimaryColor",
+                    "text": "#1E40AF"
+                },
+                "Style": {
+                    "Setter": {
+                        "Property": "Background",
+                        "Value": "{StaticResource PrimaryColor}"
+                    },
+                    "Key": "PrimaryButtonStyle",
+                    "TargetType": "Button",
+                }
+            }
+        }))
+    );
+}
+
+#[test]
+fn respects_xaml_format_hint() {
+    let payload = r#"
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="PrimaryColor">#1E40AF</Color>
+</ResourceDictionary>
+"#;
+
+    let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Xaml));
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "ResourceDictionary": {
+                "Color": {
+                    "Key": "PrimaryColor",
+                    "text": "#1E40AF"
+                }
+            }
+        }))
+    );
+}
+
+#[test]
+fn json_format_hint_does_not_fallback_to_xaml() {
+    let payload = r#"
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="PrimaryColor">#1E40AF</Color>
+</ResourceDictionary>
 "#;
 
     assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());

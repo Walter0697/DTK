@@ -1,0 +1,18 @@
+{
+  "id": "xaml_resource_dictionary",
+  "name": "xaml_resource_dictionary",
+  "source": "dotnet-ui",
+  "request": "cat App.xaml",
+  "notes": "Keep resource keys, target types, and simple brush/style declarations from a XAML ResourceDictionary while trimming repeated setters, templates, and theme noise.",
+  "format": "xaml",
+  "content_path": "ResourceDictionary",
+  "allow": [
+    "Color[].Key",
+    "SolidColorBrush[].Key",
+    "Style[].Key",
+    "Style[].TargetType",
+    "Style[].Setter[].Property",
+    "DataTemplate[].Key",
+    "DataTemplate[].DataType"
+  ]
+}

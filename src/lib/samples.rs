@@ -2,7 +2,8 @@ use crate::{
     default_config_dir, CARGO_LOCK_PACKAGES_CONFIG, CARGO_LOCK_PACKAGES_PAYLOAD,
     CARGO_LOCK_SAMPLE_CONFIG_NAME, DUMMYJSON_USERS_CONFIG, KUBERNETES_DEPLOYMENT_YAML_CONFIG,
     KUBERNETES_DEPLOYMENT_YAML_PAYLOAD, PYPROJECT_MANIFEST_CONFIG, PYPROJECT_MANIFEST_PAYLOAD,
-    PYPROJECT_SAMPLE_CONFIG_NAME,
+    PYPROJECT_SAMPLE_CONFIG_NAME, XAML_RESOURCE_DICTIONARY_CONFIG,
+    XAML_RESOURCE_DICTIONARY_PAYLOAD, XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME,
 };
 use std::io;
 
@@ -42,6 +43,18 @@ pub(super) fn install_dummy_sample_configs() -> io::Result<bool> {
             .join("samples")
             .join("pyproject_manifest.toml"),
         PYPROJECT_MANIFEST_PAYLOAD,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("configs")
+            .join(XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME),
+        XAML_RESOURCE_DICTIONARY_CONFIG,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("samples")
+            .join("xaml_resource_dictionary.xaml"),
+        XAML_RESOURCE_DICTIONARY_PAYLOAD,
     )?;
     changed |= install_text_file(
         default_config_dir()
