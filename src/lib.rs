@@ -30,6 +30,10 @@ const CARGO_LOCK_PACKAGES_PAYLOAD: &str =
 const PYPROJECT_MANIFEST_CONFIG: &str =
     include_str!("../samples/config.pyproject_manifest.toml.json");
 const PYPROJECT_MANIFEST_PAYLOAD: &str = include_str!("../samples/payload.pyproject_manifest.toml");
+const CSV_INVENTORY_EXPORT_CONFIG: &str =
+    include_str!("../samples/config.csv_inventory_export.csv.json");
+const CSV_INVENTORY_EXPORT_PAYLOAD: &str =
+    include_str!("../samples/payload.csv_inventory_export.csv");
 const XAML_RESOURCE_DICTIONARY_CONFIG: &str =
     include_str!("../samples/config.xaml_resource_dictionary.xaml.json");
 const XAML_RESOURCE_DICTIONARY_PAYLOAD: &str =
@@ -43,6 +47,7 @@ const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 pub const CARGO_LOCK_SAMPLE_CONFIG_NAME: &str = "cargo_lock_packages.toml.json";
 pub const PYPROJECT_SAMPLE_CONFIG_NAME: &str = "pyproject_manifest.toml.json";
+pub const CSV_INVENTORY_EXPORT_SAMPLE_CONFIG_NAME: &str = "csv_inventory_export.csv.json";
 pub const XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME: &str = "xaml_resource_dictionary.xaml.json";
 pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -104,6 +109,7 @@ pub enum StructuredFormat {
     Json,
     Yaml,
     Toml,
+    Csv,
     Xaml,
 }
 
@@ -113,6 +119,7 @@ impl StructuredFormat {
             "json" => Some(Self::Json),
             "yaml" | "yml" => Some(Self::Yaml),
             "toml" => Some(Self::Toml),
+            "csv" => Some(Self::Csv),
             "xaml" | "xml" => Some(Self::Xaml),
             _ => None,
         }
@@ -288,11 +295,13 @@ pub fn parse_structured_payload_with_hint(
         Some(StructuredFormat::Json) => parse_json_payload(text),
         Some(StructuredFormat::Yaml) => parse_yaml_payload(text),
         Some(StructuredFormat::Toml) => parse_toml_payload(text),
+        Some(StructuredFormat::Csv) => parse_csv_payload(text),
         Some(StructuredFormat::Xaml) => parse_xaml_payload(text),
         None => parse_json_payload(text)
             .or_else(|| parse_yaml_payload(text))
             .or_else(|| parse_toml_payload(text))
-            .or_else(|| parse_xaml_payload(text)),
+            .or_else(|| parse_xaml_payload(text))
+            .or_else(|| parse_csv_payload(text)),
     }
 }
 
@@ -319,6 +328,43 @@ fn parse_toml_payload(text: &str) -> Option<Value> {
         Ok(value) => toml_value_to_json(value),
         Err(_) => None,
     }
+}
+
+fn parse_csv_payload(text: &str) -> Option<Value> {
+    let stripped = text.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+
+    let mut reader = csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_reader(stripped.as_bytes());
+    let headers = reader.headers().ok()?.clone();
+    if headers.is_empty() {
+        return None;
+    }
+
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record = record.ok()?;
+        let mut row = serde_json::Map::new();
+
+        for (index, header) in headers.iter().enumerate() {
+            let value = record.get(index).unwrap_or_default();
+            row.insert(header.to_string(), Value::String(value.to_string()));
+        }
+
+        rows.push(Value::Object(row));
+    }
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    Some(Value::Object(serde_json::Map::from_iter([(
+        "rows".to_string(),
+        Value::Array(rows),
+    )])))
 }
 
 fn toml_value_to_json(value: toml::Value) -> Option<Value> {

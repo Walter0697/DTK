@@ -1,0 +1,12 @@
+{
+  "id": "csv_inventory_export",
+  "name": "csv_inventory_export",
+  "source": "fulfillment",
+  "request": "cat inventory.csv",
+  "notes": "Keep the operational inventory fields from a CSV export while trimming pricing, audit, and freeform notes columns.",
+  "format": "csv",
+  "content_path": "rows",
+  "allow": [
+    "[].sku"
+  ]
+}

@@ -99,12 +99,13 @@ fn parses_structured_format_aliases() {
         parse_structured_format("toml"),
         Some(StructuredFormat::Toml)
     );
+    assert_eq!(parse_structured_format("csv"), Some(StructuredFormat::Csv));
     assert_eq!(
         parse_structured_format("xaml"),
         Some(StructuredFormat::Xaml)
     );
     assert_eq!(parse_structured_format("xml"), Some(StructuredFormat::Xaml));
-    assert_eq!(parse_structured_format("csv"), None);
+    assert_eq!(parse_structured_format("csv"), Some(StructuredFormat::Csv));
 }
 
 #[test]
@@ -198,6 +199,74 @@ version = "0.0.2"
 "#;
 
     assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
+}
+
+#[test]
+fn parses_structured_csv_payload() {
+    let payload = r#"
+sku,name,warehouse,region,status,quantity,unit_cost,retail_price
+SKU-1001,Universal Adapter,SEA-01,us-west,active,48,4.20,9.99
+SKU-1002,Cable Kit,SEA-01,us-west,active,72,1.75,4.99
+SKU-1003,Notebook Pack,DAL-02,us-central,active,110,2.10,5.49
+"#;
+
+    let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Csv));
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "rows": [
+                {
+                    "sku": "SKU-1001",
+                    "name": "Universal Adapter",
+                    "warehouse": "SEA-01",
+                    "region": "us-west",
+                    "status": "active",
+                    "quantity": "48",
+                    "unit_cost": "4.20",
+                    "retail_price": "9.99"
+                },
+                {
+                    "sku": "SKU-1002",
+                    "name": "Cable Kit",
+                    "warehouse": "SEA-01",
+                    "region": "us-west",
+                    "status": "active",
+                    "quantity": "72",
+                    "unit_cost": "1.75",
+                    "retail_price": "4.99"
+                },
+                {
+                    "sku": "SKU-1003",
+                    "name": "Notebook Pack",
+                    "warehouse": "DAL-02",
+                    "region": "us-central",
+                    "status": "active",
+                    "quantity": "110",
+                    "unit_cost": "2.10",
+                    "retail_price": "5.49"
+                }
+            ]
+        }))
+    );
+}
+
+#[test]
+fn detects_structured_csv_payload() {
+    let payload = r#"
+sku,name,warehouse,region,status,quantity
+SKU-1001,Universal Adapter,SEA-01,us-west,active,48
+SKU-1002,Cable Kit,SEA-01,us-west,active,72
+"#;
+
+    assert!(parse_structured_payload(payload).is_some());
+}
+
+#[test]
+fn csv_format_hint_does_not_fallback_to_json() {
+    let payload = r#"{"sku":"SKU-1001","name":"Universal Adapter"}"#;
+
+    assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Csv)).is_none());
 }
 
 #[test]

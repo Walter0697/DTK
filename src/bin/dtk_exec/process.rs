@@ -79,7 +79,12 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
             return ExitCode::from(1);
         };
 
-        let filtered_text = match serde_json::to_string_pretty(&filtered) {
+        let filtered_text = if matches!(format_hint, Some(dtk::StructuredFormat::Csv)) {
+            serde_json::to_string(&filtered)
+        } else {
+            serde_json::to_string_pretty(&filtered)
+        };
+        let filtered_text = match filtered_text {
             Ok(text) => text,
             Err(err) => {
                 eprintln!("failed to render filtered JSON: {err}");
@@ -96,8 +101,8 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
         if let Some(signature) = summarize_command_signature(&signature_args) {
             let original_tokens = token_count_for_content(&stdout_text);
             let filtered_tokens_raw = token_count_for_content(&filtered_text);
-            let use_original_output =
-                payload::should_return_original_output(original_tokens, filtered_tokens_raw);
+            let use_original_output = !matches!(format_hint, Some(dtk::StructuredFormat::Csv))
+                && payload::should_return_original_output(original_tokens, filtered_tokens_raw);
             let emitted_filtered_tokens = if use_original_output {
                 original_tokens
             } else {
