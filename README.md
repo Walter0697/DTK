@@ -369,8 +369,10 @@ Branch protection and PR-only merges are configured on GitHub, not in the repo i
 ## Roadmap
 
 1. Add PII-aware filtering.
-2. Improve TUI and GUI management.
-3. Add more release and distribution methods.
+2. Add selectable output formats beyond JSON, so users can choose the surface that fits their workflow.
+3. Add a token-efficient output format for faster scanning and lower prompt cost on large payloads.
+4. Improve TUI and GUI management.
+5. Add more release and distribution methods.
 
 ## License
 
