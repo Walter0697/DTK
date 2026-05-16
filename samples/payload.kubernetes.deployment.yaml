@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+items:
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: api-gateway
+      namespace: demo
+      labels:
+        app: api-gateway
+        tier: edge
+        track: stable
+      annotations:
+        maintainer: platform@example.com
+        checksum/config: "111111"
+        deployment.kubernetes.io/revision: "14"
+    spec:
+      replicas: 4
+      revisionHistoryLimit: 10
+      progressDeadlineSeconds: 600
+      selector:
+        matchLabels:
+          app: api-gateway
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+          maxSurge: 1
+      template:
+        metadata:
+          labels:
+            app: api-gateway
+            tier: edge
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: api-gateway
+          containers:
+            - name: gateway
+              image: ghcr.io/example/api-gateway:1.22.4
+              imagePullPolicy: IfNotPresent
+              ports:
+                - name: http
+                  containerPort: 8080
+              env:
+                - name: LOG_LEVEL
+                  value: debug
+                - name: FEATURE_RATE_LIMIT
+                  value: "true"
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+              readinessProbe:
+                httpGet:
+                  path: /ready
+                  port: 8080
+              livenessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+            - name: metrics
+              image: ghcr.io/example/metrics-sidecar:0.9.1
+              env:
+                - name: SCRAPE_INTERVAL
+                  value: 15s
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: user-service
+      namespace: demo
+      labels:
+        app: user-service
+        tier: backend
+        track: stable
+      annotations:
+        maintainer: identity@example.com
+        checksum/config: "222222"
+        deployment.kubernetes.io/revision: "9"
+    spec:
+      replicas: 3
+      revisionHistoryLimit: 10
+      selector:
+        matchLabels:
+          app: user-service
+      template:
+        metadata:
+          labels:
+            app: user-service
+            tier: backend
+          annotations:
+            sidecar.istio.io/inject: "true"
+        spec:
+          serviceAccountName: user-service
+          containers:
+            - name: api
+              image: ghcr.io/example/user-service:3.18.0
+              ports:
+                - name: http
+                  containerPort: 8080
+              env:
+                - name: LOG_LEVEL
+                  value: info
+                - name: JDBC_POOL_SIZE
+                  value: "16"
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 384Mi
+                limits:
+                  cpu: "1"
+                  memory: 768Mi
+            - name: migrations
+              image: ghcr.io/example/db-tools:1.4.2
+              command: ["sh", "-c", "sleep 3600"]
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: billing-worker
+      namespace: demo
+      labels:
+        app: billing-worker
+        tier: jobs
+        track: canary
+      annotations:
+        maintainer: finance@example.com
+        checksum/config: "333333"
+        deployment.kubernetes.io/revision: "5"
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: billing-worker
+      template:
+        metadata:
+          labels:
+            app: billing-worker
+            tier: jobs
+        spec:
+          containers:
+            - name: worker
+              image: ghcr.io/example/billing-worker:2.7.1
+              env:
+                - name: LOG_LEVEL
+                  value: warn
+                - name: QUEUE_NAME
+                  value: billing
+              resources:
+                requests:
+                  cpu: 300m
+                  memory: 512Mi
+                limits:
+                  cpu: "2"
+                  memory: 1Gi
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: api-gateway
+      namespace: demo
+      labels:
+        app: api-gateway
+        tier: edge
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    spec:
+      type: LoadBalancer
+      selector:
+        app: api-gateway
+      ports:
+        - name: http
+          port: 80
+          targetPort: 8080
+        - name: https
+          port: 443
+          targetPort: 8443
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: user-service
+      namespace: demo
+      labels:
+        app: user-service
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+    spec:
+      type: ClusterIP
+      selector:
+        app: user-service
+      ports:
+        - name: http
+          port: 8080
+          targetPort: 8080
+        - name: grpc
+          port: 9090
+          targetPort: 9090
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: runtime-settings
+      namespace: demo
+      labels:
+        app: shared
+        tier: platform
+      annotations:
+        managed-by: helm
+    data:
+      LOG_LEVEL: info
+      FEATURE_PAYMENTS: "true"
+      FEATURE_AUDIT_EXPORT: "false"
+      JAVA_TOOL_OPTIONS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: edge-settings
+      namespace: demo
+      labels:
+        app: api-gateway
+        tier: edge
+      annotations:
+        managed-by: helm
+    data:
+      LOG_LEVEL: debug
+      RATE_LIMIT_RPS: "250"
+      ENABLE_REQUEST_LOGS: "true"
+      ENABLE_RESPONSE_CACHE: "false"

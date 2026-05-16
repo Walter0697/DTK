@@ -1,0 +1,43 @@
+<rss version="2.0">
+  <channel>
+    <title>Desktop Tooling Weekly</title>
+    <link>https://example.com/desktop-tooling-weekly</link>
+    <description>Weekly feed for desktop tooling, configuration patterns, and release notes.</description>
+    <item>
+      <title>DTK expands structured sample coverage</title>
+      <link>https://example.com/articles/dtk-structured-samples</link>
+      <pubDate>Mon, 12 May 2026 09:00:00 GMT</pubDate>
+      <category>release</category>
+      <author>team@example.com</author>
+      <guid>feed-001</guid>
+      <description>DTK now ships more structured sample configs for filtering repeated payloads across command output and stored payloads, including formats that users encounter in real workflows.</description>
+    </item>
+    <item>
+      <title>Why repeated XML items are a good fit for DTK</title>
+      <link>https://example.com/articles/xml-items-dtk</link>
+      <pubDate>Tue, 13 May 2026 09:00:00 GMT</pubDate>
+      <category>guide</category>
+      <author>team@example.com</author>
+      <guid>feed-002</guid>
+      <description>XML feeds, manifests, and service catalogs often repeat the same nested shape with verbose metadata and long summaries that are easy to trim away.</description>
+    </item>
+    <item>
+      <title>Install-dummy sample design notes</title>
+      <link>https://example.com/articles/install-dummy-samples</link>
+      <pubDate>Wed, 14 May 2026 09:00:00 GMT</pubDate>
+      <category>workflow</category>
+      <author>team@example.com</author>
+      <guid>feed-003</guid>
+      <description>Keep the recurring item fields and remove the editorial and tracking payload from the XML sample so the reduced output stays useful to the agent.</description>
+    </item>
+    <item>
+      <title>Practical XML usage in agent workflows</title>
+      <link>https://example.com/articles/xml-agent-workflows</link>
+      <pubDate>Thu, 15 May 2026 09:00:00 GMT</pubDate>
+      <category>analysis</category>
+      <author>team@example.com</author>
+      <guid>feed-004</guid>
+      <description>RSS-like XML is common enough in product dashboards and content pipelines that it makes a better sample than a toy nested element tree.</description>
+    </item>
+  </channel>
+</rss>

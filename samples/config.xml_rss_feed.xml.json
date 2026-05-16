@@ -1,0 +1,14 @@
+{
+  "id": "xml_rss_feed",
+  "name": "xml_rss_feed",
+  "source": "news-feed",
+  "request": "cat feed.xml",
+  "notes": "Keep the feed metadata and article titles from a repeated XML RSS feed while trimming long summaries and tracking metadata.",
+  "format": "xml",
+  "content_path": "rss.channel",
+  "allow": [
+    "title.text",
+    "item[].title.text",
+    "item[].pubDate.text"
+  ]
+}

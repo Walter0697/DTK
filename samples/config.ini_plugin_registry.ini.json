@@ -1,0 +1,14 @@
+{
+  "id": "ini_plugin_registry",
+  "name": "ini_plugin_registry",
+  "source": "desktop-app",
+  "request": "cat plugins.ini",
+  "notes": "Keep the plugin name, enabled flag, and release channel from a repeated INI plugin registry while trimming long rollout notes and maintenance metadata.",
+  "format": "ini",
+  "content_path": "plugin",
+  "allow": [
+    "[].name",
+    "[].enabled",
+    "[].channel"
+  ]
+}

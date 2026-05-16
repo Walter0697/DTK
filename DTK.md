@@ -1,12 +1,17 @@
 # DTK
 
-DTK is a structured JSON preprocessing layer.
+DTK is a structured payload preprocessing layer.
 
 It reduces model-facing payloads while preserving recoverability of the original data.
 
 ## What DTK Does
 
 - accepts JSON objects and arrays
+- accepts YAML mappings and sequences
+- accepts TOML tables and arrays of tables
+- accepts Terraform-style HCL blocks
+- accepts XAML / XML documents
+- presents supported structured outputs as JSON-shaped data to the agent
 - filters fields with allowlist rules
 - stores the original payload locally for recovery
 - adds `_dtk` metadata with a `ref_id`, field inventory, and content path hints
@@ -21,7 +26,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `cargo run --quiet --bin dtk_retrieve_json -- <ref_id> [fields]`
 - `cargo run --quiet --bin dtk_cleanup_store`
 - `cargo run --quiet --bin dtk_cleanup_store -- --dry-run`
-- `dtk exec --config <config.json> -- <command> [args...]`
+- `dtk exec -- <command> [args...]`
 - `dtk retrieve <ref_id> [fields] [--index N | --all]`
 - `dtk config list`
 - `dtk config allow add <config> <field>`
@@ -30,6 +35,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `dtk version`
 - `./install.sh`
 - `dtk install`
+- `dtk install-dummy`
 - `dtk uninstall`
 
 ## Config Files
@@ -39,6 +45,7 @@ By default, user configs should live under the global DTK config directory, not 
 On Unix-like systems that is `~/.config/dtk/`; use `DTK_CONFIG_DIR` to override it.
 Place source configs under `~/.config/dtk/configs/`.
 `dtk install` seeds a default config at `~/.config/dtk/configs/dummyjson_users.json` so the agent can reuse it later.
+`dtk install-dummy` installs the full bundled sample set, which currently includes a Cargo.lock-style TOML example config at `~/.config/dtk/configs/cargo_lock_packages.toml.json`, a TOML Python manifest example config at `~/.config/dtk/configs/pyproject_manifest.toml.json`, a Terraform-style HCL variables example config at `~/.config/dtk/configs/terraform_module_variables.tf.json`, a CSV inventory export example config at `~/.config/dtk/configs/csv_inventory_export.csv.json`, an INI plugin registry example config at `~/.config/dtk/configs/ini_plugin_registry.ini.json`, an XML RSS feed example config at `~/.config/dtk/configs/xml_rss_feed.xml.json`, a XAML ResourceDictionary example config at `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, their sample payloads at `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/samples/terraform_module_variables.tf`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/samples/ini_plugin_registry.ini`, `~/.config/dtk/samples/xml_rss_feed.xml`, and `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, plus the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` with a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Recommended fields:
 
@@ -46,6 +53,7 @@ Recommended fields:
 - `source`
 - `request`
 - `notes`
+- `format` (optional parser override such as `json`, `yaml`, `toml`, `hcl`, `csv`, `ini`, `xml`, or `xaml`)
 - `content_path`
 - `allow`
 
@@ -57,6 +65,7 @@ Example:
   "source": "n8n",
   "request": "curl -sS -H \"X-N8N-API-KEY: $N8N_API_TOKEN\" \"$N8N_BASE_URL/api/v1/workflows?limit=3\"",
   "notes": "Keep the workflow list surface fields and drop the full workflow graph.",
+  "format": "json",
   "content_path": "data",
   "allow": [
     "[].id",
@@ -93,27 +102,52 @@ Example:
 DTK is designed to work like an agent-facing prompt workflow, not as an install-time hook.
 RTK and DTK are complementary:
 
-- Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, and `dtk uninstall`.
+- Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
 - For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
+- The agent-facing payload surface is JSON-shaped even when the source data started as YAML, TOML, HCL, CSV, INI, XML, or XAML.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
 - Do not default to `rtk proxy` for curl/API/JSON flows when `dtk` can handle them.
 
 Examples:
 
 ```bash
-dtk exec --config n8n_workflows_list.json -- \
-  curl -sS -H "X-N8N-API-KEY: $N8N_API_TOKEN" "$N8N_BASE_URL/api/v1/workflows?limit=3"
+dtk exec -- curl -sS -H "X-N8N-API-KEY: $N8N_API_TOKEN" "$N8N_BASE_URL/api/v1/workflows?limit=3"
+dtk exec -- curl -sS https://dummyjson.com/users
+dtk exec -- kubectl get pods -o yaml
+dtk exec -- cat Cargo.lock
+dtk exec -- cat pyproject.toml
+dtk exec -- cat App.xaml
+```
 
-dtk exec -- \
-  curl -sS https://dummyjson.com/users
+CSV is useful for inventory exports and other repeated tabular payloads:
 
+```bash
+dtk exec -- cat inventory.csv
+```
+
+INI is useful for repeated section-based configs:
+
+```bash
+dtk exec -- cat plugins.ini
+```
+
+XML is useful for repeated nested feeds and manifests:
+
+```bash
+dtk exec -- cat feed.xml
+```
+
+HCL is useful for repeated Terraform module variables:
+
+```bash
+dtk exec -- cat variables.tf
+```
+
+```bash
 dtk retrieve dtk_1234567890abcdef users[].address,users[].age
-
 dtk retrieve dtk_1234567890abcdef name --index 0
-
 dtk retrieve dtk_1234567890abcdef name --all
-
 dtk retrieve dtk_1234567890abcdef users[0].firstName,users[0].lastName
 ```
 
@@ -123,17 +157,18 @@ Recommended flow:
 
 1. The user provides a command, curl URL, or API response.
 2. The DTK Config Assistant inspects the payload and asks what matters, using `_dtk.available_fields` and `_dtk.content_path` when available.
-3. DTK writes a reusable source config under `~/.config/dtk/configs/` when needed.
+3. DTK writes a reusable source config under `~/.config/dtk/configs/` when needed and registers a matching hook rule.
 4. `dtk exec` is used when you want to run the command through DTK and store the original response.
-5. Before changing a config, run `dtk config list` to confirm the installed identifier you should target.
-6. After a config exists, use DTK-native config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
-7. When `dtk retrieve` or `dtk exec` emits a `DTK recommendation:` notice, treat that as a prompt to ask the user whether to add or remove specific fields from the config, or remove the config entirely if it is not reducing token usage enough for the endpoint. Include the concrete follow-up command in the message: `dtk config list` first, then `dtk config allow add <config> <field>`, `dtk config allow remove <config> <field>`, or `dtk config delete <config>` as appropriate.
-8. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
+5. DTK resolves the matching config from the command shape, so the user does not need to name the config explicitly in normal use.
+6. If the command shape is ambiguous, ask the user whether a second endpoint or command should be run once more to confirm the schema boundary.
+7. After a config exists, use DTK-native config commands when you want to increase or decrease the config `allow` surface without recreating the config from scratch.
+8. When `dtk retrieve` or `dtk exec` emits a `DTK recommendation:` notice, treat that as a prompt to ask the user whether to add or remove specific fields from the config, or remove the config entirely if it is not reducing token usage enough for the endpoint. Include the concrete follow-up command in the message: `dtk config list` first, then `dtk config allow add <config> <field>`, `dtk config allow remove <config> <field>`, or `dtk config delete <config>` as appropriate.
+9. Use `dtk retrieve` when you need to pull a few fields back out of a stored payload.
    Example:
 
 ```bash
 dtk retrieve <ref_id> 'users[0].firstName,users[0].lastName'
 ```
-9. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
-10. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint, and include the exact DTK config command they should run next.
-11. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.
+10. If the user keeps retrieving the same structural field across different items in a collection, ask inline whether they want the reusable collection-level version of that field added to the config for future filtered views.
+11. If repeated retrievals or repeated fallbacks trigger a `DTK recommendation:` notice, ask the user inline whether they want the config changed for that endpoint, and include the exact DTK config command they should run next.
+12. When a DTK rule matches or can be created, prefer DTK routing first; keep RTK in the stack whenever it would normally be used for token savings.

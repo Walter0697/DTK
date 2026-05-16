@@ -1,0 +1,13 @@
+{
+  "id": "cargo_lock_packages_toml",
+  "name": "cargo_lock_packages_toml",
+  "source": "cargo",
+  "request": "cat Cargo.lock",
+  "notes": "Keep only package identity fields from a Cargo.lock-style TOML payload while trimming checksum, source, and dependency churn.",
+  "format": "toml",
+  "content_path": "package",
+  "allow": [
+    "[].name",
+    "[].version"
+  ]
+}

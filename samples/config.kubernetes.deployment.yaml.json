@@ -1,0 +1,19 @@
+{
+  "id": "kubernetes_deployment_yaml",
+  "name": "kubernetes_deployment_yaml",
+  "source": "kubernetes",
+  "request": "kubectl get deployment,service,configmap -n demo -o yaml",
+  "notes": "Keep the key identity and runtime fields from a larger Kubernetes resource list while trimming rollout, probe, annotation, environment, and resource detail.",
+  "format": "yaml",
+  "content_path": "items",
+  "allow": [
+    "[].kind",
+    "[].metadata.name",
+    "[].spec.replicas",
+    "[].spec.ports[].port",
+    "[].spec.ports[].targetPort",
+    "[].spec.template.spec.containers[].name",
+    "[].spec.template.spec.containers[].image",
+    "[].data.LOG_LEVEL"
+  ]
+}
