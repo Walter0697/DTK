@@ -6,7 +6,8 @@ use crate::{
     KUBERNETES_DEPLOYMENT_YAML_CONFIG, KUBERNETES_DEPLOYMENT_YAML_PAYLOAD,
     PYPROJECT_MANIFEST_CONFIG, PYPROJECT_MANIFEST_PAYLOAD, PYPROJECT_SAMPLE_CONFIG_NAME,
     XAML_RESOURCE_DICTIONARY_CONFIG, XAML_RESOURCE_DICTIONARY_PAYLOAD,
-    XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME,
+    XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME, XML_RSS_FEED_CONFIG, XML_RSS_FEED_PAYLOAD,
+    XML_RSS_FEED_SAMPLE_CONFIG_NAME,
 };
 use std::io;
 
@@ -70,6 +71,18 @@ pub(super) fn install_dummy_sample_configs() -> io::Result<bool> {
             .join("samples")
             .join("ini_plugin_registry.ini"),
         INI_PLUGIN_REGISTRY_PAYLOAD,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("configs")
+            .join(XML_RSS_FEED_SAMPLE_CONFIG_NAME),
+        XML_RSS_FEED_CONFIG,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("samples")
+            .join("xml_rss_feed.xml"),
+        XML_RSS_FEED_PAYLOAD,
     )?;
     changed |= install_text_file(
         default_config_dir()

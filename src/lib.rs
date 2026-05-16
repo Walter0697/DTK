@@ -38,6 +38,8 @@ const INI_PLUGIN_REGISTRY_CONFIG: &str =
     include_str!("../samples/config.ini_plugin_registry.ini.json");
 const INI_PLUGIN_REGISTRY_PAYLOAD: &str =
     include_str!("../samples/payload.ini_plugin_registry.ini");
+const XML_RSS_FEED_CONFIG: &str = include_str!("../samples/config.xml_rss_feed.xml.json");
+const XML_RSS_FEED_PAYLOAD: &str = include_str!("../samples/payload.xml_rss_feed.xml");
 const XAML_RESOURCE_DICTIONARY_CONFIG: &str =
     include_str!("../samples/config.xaml_resource_dictionary.xaml.json");
 const XAML_RESOURCE_DICTIONARY_PAYLOAD: &str =
@@ -53,6 +55,7 @@ pub const CARGO_LOCK_SAMPLE_CONFIG_NAME: &str = "cargo_lock_packages.toml.json";
 pub const PYPROJECT_SAMPLE_CONFIG_NAME: &str = "pyproject_manifest.toml.json";
 pub const CSV_INVENTORY_EXPORT_SAMPLE_CONFIG_NAME: &str = "csv_inventory_export.csv.json";
 pub const INI_PLUGIN_REGISTRY_SAMPLE_CONFIG_NAME: &str = "ini_plugin_registry.ini.json";
+pub const XML_RSS_FEED_SAMPLE_CONFIG_NAME: &str = "xml_rss_feed.xml.json";
 pub const XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME: &str = "xaml_resource_dictionary.xaml.json";
 pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);

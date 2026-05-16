@@ -79,7 +79,7 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
             return ExitCode::from(1);
         };
 
-        let filtered_text = if matches!(format_hint, Some(dtk::StructuredFormat::Csv)) {
+        let filtered_text = if format_hint.is_some() {
             serde_json::to_string(&filtered)
         } else {
             serde_json::to_string_pretty(&filtered)
