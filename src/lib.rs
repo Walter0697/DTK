@@ -34,6 +34,10 @@ const CSV_INVENTORY_EXPORT_CONFIG: &str =
     include_str!("../samples/config.csv_inventory_export.csv.json");
 const CSV_INVENTORY_EXPORT_PAYLOAD: &str =
     include_str!("../samples/payload.csv_inventory_export.csv");
+const INI_PLUGIN_REGISTRY_CONFIG: &str =
+    include_str!("../samples/config.ini_plugin_registry.ini.json");
+const INI_PLUGIN_REGISTRY_PAYLOAD: &str =
+    include_str!("../samples/payload.ini_plugin_registry.ini");
 const XAML_RESOURCE_DICTIONARY_CONFIG: &str =
     include_str!("../samples/config.xaml_resource_dictionary.xaml.json");
 const XAML_RESOURCE_DICTIONARY_PAYLOAD: &str =
@@ -48,6 +52,7 @@ pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
 pub const CARGO_LOCK_SAMPLE_CONFIG_NAME: &str = "cargo_lock_packages.toml.json";
 pub const PYPROJECT_SAMPLE_CONFIG_NAME: &str = "pyproject_manifest.toml.json";
 pub const CSV_INVENTORY_EXPORT_SAMPLE_CONFIG_NAME: &str = "csv_inventory_export.csv.json";
+pub const INI_PLUGIN_REGISTRY_SAMPLE_CONFIG_NAME: &str = "ini_plugin_registry.ini.json";
 pub const XAML_RESOURCE_DICTIONARY_SAMPLE_CONFIG_NAME: &str = "xaml_resource_dictionary.xaml.json";
 pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -110,6 +115,7 @@ pub enum StructuredFormat {
     Yaml,
     Toml,
     Csv,
+    Ini,
     Xaml,
 }
 
@@ -120,6 +126,7 @@ impl StructuredFormat {
             "yaml" | "yml" => Some(Self::Yaml),
             "toml" => Some(Self::Toml),
             "csv" => Some(Self::Csv),
+            "ini" => Some(Self::Ini),
             "xaml" | "xml" => Some(Self::Xaml),
             _ => None,
         }
@@ -296,12 +303,14 @@ pub fn parse_structured_payload_with_hint(
         Some(StructuredFormat::Yaml) => parse_yaml_payload(text),
         Some(StructuredFormat::Toml) => parse_toml_payload(text),
         Some(StructuredFormat::Csv) => parse_csv_payload(text),
+        Some(StructuredFormat::Ini) => parse_ini_payload(text),
         Some(StructuredFormat::Xaml) => parse_xaml_payload(text),
         None => parse_json_payload(text)
             .or_else(|| parse_yaml_payload(text))
             .or_else(|| parse_toml_payload(text))
             .or_else(|| parse_xaml_payload(text))
-            .or_else(|| parse_csv_payload(text)),
+            .or_else(|| parse_csv_payload(text))
+            .or_else(|| parse_ini_payload(text)),
     }
 }
 
@@ -357,7 +366,7 @@ fn parse_csv_payload(text: &str) -> Option<Value> {
         rows.push(Value::Object(row));
     }
 
-    if rows.is_empty() {
+    if rows.is_empty() || headers.len() < 2 {
         return None;
     }
 
@@ -365,6 +374,143 @@ fn parse_csv_payload(text: &str) -> Option<Value> {
         "rows".to_string(),
         Value::Array(rows),
     )])))
+}
+
+fn parse_ini_payload(text: &str) -> Option<Value> {
+    let stripped = text.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+
+    let mut root = serde_json::Map::new();
+    let mut current_section_name: Option<String> = None;
+    let mut current_section = serde_json::Map::new();
+    let mut saw_content = false;
+
+    for raw_line in stripped.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(section_name) = parse_ini_section_name(line) {
+            if let Some(previous_section_name) = current_section_name.replace(section_name) {
+                push_named_value(
+                    &mut root,
+                    &previous_section_name,
+                    Value::Object(std::mem::take(&mut current_section)),
+                );
+            }
+            saw_content = true;
+            continue;
+        }
+
+        let Some((key, value)) = split_ini_assignment(line) else {
+            return None;
+        };
+        let target = if current_section_name.is_some() {
+            &mut current_section
+        } else {
+            &mut root
+        };
+        push_named_value(target, key, parse_ini_value(value));
+        saw_content = true;
+    }
+
+    if let Some(section_name) = current_section_name {
+        push_named_value(
+            &mut root,
+            &section_name,
+            Value::Object(std::mem::take(&mut current_section)),
+        );
+    }
+
+    if !saw_content || root.is_empty() {
+        return None;
+    }
+
+    Some(Value::Object(root))
+}
+
+fn parse_ini_section_name(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let name = trimmed.strip_prefix('[')?.strip_suffix(']')?.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn split_ini_assignment(line: &str) -> Option<(&str, &str)> {
+    let equals_index = line.find('=');
+    let colon_index = line.find(':');
+
+    let split_index = match (equals_index, colon_index) {
+        (Some(eq), Some(colon)) => Some(eq.min(colon)),
+        (Some(eq), None) => Some(eq),
+        (None, Some(colon)) => Some(colon),
+        (None, None) => None,
+    }?;
+
+    let (key, value) = line.split_at(split_index);
+    let value = value.get(1..)?;
+    let key = key.trim();
+    let value = value.trim();
+
+    if key.is_empty() {
+        None
+    } else {
+        Some((key, value))
+    }
+}
+
+fn parse_ini_value(value: &str) -> Value {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Value::String(String::new());
+    }
+
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        return Value::String(trimmed[1..trimmed.len().saturating_sub(1)].to_string());
+    }
+
+    if trimmed.eq_ignore_ascii_case("true") {
+        return Value::Bool(true);
+    }
+
+    if trimmed.eq_ignore_ascii_case("false") {
+        return Value::Bool(false);
+    }
+
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Value::Number(value.into());
+    }
+
+    if let Ok(value) = trimmed.parse::<f64>() {
+        if let Some(number) = serde_json::Number::from_f64(value) {
+            return Value::Number(number);
+        }
+    }
+
+    Value::String(trimmed.to_string())
+}
+
+fn push_named_value(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    match map.entry(key.to_string()) {
+        serde_json::map::Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+        serde_json::map::Entry::Occupied(mut entry) => match entry.get_mut() {
+            Value::Array(values) => values.push(value),
+            existing => {
+                let previous = std::mem::replace(existing, Value::Null);
+                *existing = Value::Array(vec![previous, value]);
+            }
+        },
+    }
 }
 
 fn toml_value_to_json(value: toml::Value) -> Option<Value> {

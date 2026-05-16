@@ -100,12 +100,12 @@ fn parses_structured_format_aliases() {
         Some(StructuredFormat::Toml)
     );
     assert_eq!(parse_structured_format("csv"), Some(StructuredFormat::Csv));
+    assert_eq!(parse_structured_format("ini"), Some(StructuredFormat::Ini));
     assert_eq!(
         parse_structured_format("xaml"),
         Some(StructuredFormat::Xaml)
     );
     assert_eq!(parse_structured_format("xml"), Some(StructuredFormat::Xaml));
-    assert_eq!(parse_structured_format("csv"), Some(StructuredFormat::Csv));
 }
 
 #[test]
@@ -267,6 +267,89 @@ fn csv_format_hint_does_not_fallback_to_json() {
     let payload = r#"{"sku":"SKU-1001","name":"Universal Adapter"}"#;
 
     assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Csv)).is_none());
+}
+
+#[test]
+fn parses_structured_ini_payload() {
+    let payload = r#"
+[plugin]
+name = "telemetry"
+enabled = true
+channel = "stable"
+notes = "keep the telemetry exporter enabled for desktop sync and verify rollout health before every release"
+
+[plugin]
+name = "theme"
+enabled = false
+channel = "beta"
+notes = "keep the theme pack disabled until brand review and accessibility validation are complete"
+
+[plugin]
+name = "sync"
+enabled = true
+channel = "stable"
+notes = "keep the sync worker enabled for the internal desktop fleet and watch conflict handling"
+"#;
+
+    let parsed = parse_structured_payload(payload);
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "plugin": [
+                {
+                    "name": "telemetry",
+                    "enabled": true,
+                    "channel": "stable",
+                    "notes": "keep the telemetry exporter enabled for desktop sync and verify rollout health before every release"
+                },
+                {
+                    "name": "theme",
+                    "enabled": false,
+                    "channel": "beta",
+                    "notes": "keep the theme pack disabled until brand review and accessibility validation are complete"
+                },
+                {
+                    "name": "sync",
+                    "enabled": true,
+                    "channel": "stable",
+                    "notes": "keep the sync worker enabled for the internal desktop fleet and watch conflict handling"
+                }
+            ]
+        }))
+    );
+}
+
+#[test]
+fn respects_ini_format_hint() {
+    let payload = r#"
+[plugin]
+name = "telemetry"
+enabled = true
+"#;
+
+    let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Ini));
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "plugin": {
+                "name": "telemetry",
+                "enabled": true
+            }
+        }))
+    );
+}
+
+#[test]
+fn json_format_hint_does_not_fallback_to_ini() {
+    let payload = r#"
+[plugin]
+name = "telemetry"
+enabled = true
+"#;
+
+    assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
 }
 
 #[test]

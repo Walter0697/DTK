@@ -1,7 +1,8 @@
 use crate::{
     default_config_dir, CARGO_LOCK_PACKAGES_CONFIG, CARGO_LOCK_PACKAGES_PAYLOAD,
     CARGO_LOCK_SAMPLE_CONFIG_NAME, CSV_INVENTORY_EXPORT_CONFIG, CSV_INVENTORY_EXPORT_PAYLOAD,
-    CSV_INVENTORY_EXPORT_SAMPLE_CONFIG_NAME, DUMMYJSON_USERS_CONFIG,
+    CSV_INVENTORY_EXPORT_SAMPLE_CONFIG_NAME, DUMMYJSON_USERS_CONFIG, INI_PLUGIN_REGISTRY_CONFIG,
+    INI_PLUGIN_REGISTRY_PAYLOAD, INI_PLUGIN_REGISTRY_SAMPLE_CONFIG_NAME,
     KUBERNETES_DEPLOYMENT_YAML_CONFIG, KUBERNETES_DEPLOYMENT_YAML_PAYLOAD,
     PYPROJECT_MANIFEST_CONFIG, PYPROJECT_MANIFEST_PAYLOAD, PYPROJECT_SAMPLE_CONFIG_NAME,
     XAML_RESOURCE_DICTIONARY_CONFIG, XAML_RESOURCE_DICTIONARY_PAYLOAD,
@@ -57,6 +58,18 @@ pub(super) fn install_dummy_sample_configs() -> io::Result<bool> {
             .join("samples")
             .join("csv_inventory_export.csv"),
         CSV_INVENTORY_EXPORT_PAYLOAD,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("configs")
+            .join(INI_PLUGIN_REGISTRY_SAMPLE_CONFIG_NAME),
+        INI_PLUGIN_REGISTRY_CONFIG,
+    )?;
+    changed |= install_text_file(
+        default_config_dir()
+            .join("samples")
+            .join("ini_plugin_registry.ini"),
+        INI_PLUGIN_REGISTRY_PAYLOAD,
     )?;
     changed |= install_text_file(
         default_config_dir()

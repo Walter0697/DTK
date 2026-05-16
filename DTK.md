@@ -43,7 +43,7 @@ By default, user configs should live under the global DTK config directory, not 
 On Unix-like systems that is `~/.config/dtk/`; use `DTK_CONFIG_DIR` to override it.
 Place source configs under `~/.config/dtk/configs/`.
 `dtk install` seeds a default config at `~/.config/dtk/configs/dummyjson_users.json` so the agent can reuse it later.
-`dtk install-dummy` installs the full bundled sample set, which currently includes a Cargo.lock-style TOML example config at `~/.config/dtk/configs/cargo_lock_packages.toml.json`, a TOML Python manifest example config at `~/.config/dtk/configs/pyproject_manifest.toml.json`, a CSV inventory export example config at `~/.config/dtk/configs/csv_inventory_export.csv.json`, a XAML ResourceDictionary example config at `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, their sample payloads at `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/samples/csv_inventory_export.csv`, and `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, plus the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` with a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
+`dtk install-dummy` installs the full bundled sample set, which currently includes a Cargo.lock-style TOML example config at `~/.config/dtk/configs/cargo_lock_packages.toml.json`, a TOML Python manifest example config at `~/.config/dtk/configs/pyproject_manifest.toml.json`, a CSV inventory export example config at `~/.config/dtk/configs/csv_inventory_export.csv.json`, an INI plugin registry example config at `~/.config/dtk/configs/ini_plugin_registry.ini.json`, a XAML ResourceDictionary example config at `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, their sample payloads at `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/samples/ini_plugin_registry.ini`, and `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, plus the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` with a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Recommended fields:
 
@@ -51,7 +51,7 @@ Recommended fields:
 - `source`
 - `request`
 - `notes`
-- `format` (optional parser override such as `json`, `yaml`, `toml`, `csv`, or `xaml`)
+- `format` (optional parser override such as `json`, `yaml`, `toml`, `csv`, `ini`, or `xaml`)
 - `content_path`
 - `allow`
 
@@ -131,6 +131,11 @@ CSV is useful for inventory exports and other repeated tabular payloads:
 
 dtk exec --config csv_inventory_export.csv.json -- \
   cat inventory.csv
+
+INI is useful for repeated section-based configs:
+
+dtk exec --config ini_plugin_registry.ini.json -- \
+  cat plugins.ini
 
 dtk retrieve dtk_1234567890abcdef users[].address,users[].age
 
