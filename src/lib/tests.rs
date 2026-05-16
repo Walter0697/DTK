@@ -1895,6 +1895,57 @@ fn replaces_values_from_sibling_fields_with_template() {
 }
 
 #[test]
+fn replaces_values_from_nested_sibling_fields() {
+    let value = parse_json_payload(
+        r#"{"users":[{"firstName":"Ada","lastName":"Lovelace","company":{"name":"Analytical Engines","department":"R&D"}}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].firstName", "users[].lastName", "users[].company.name", "users[].company.department"],
+        "pii": [
+            {
+                "path": "users[].lastName",
+                "action": "replace",
+                "source_fields": ["firstName", "company.name"],
+                "template": "{firstName} @ {company.name}"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+    let user = filtered["users"][0].as_object().expect("user object");
+
+    assert_eq!(
+        user["lastName"].as_str().expect("lastName string"),
+        "Ada @ Analytical Engines"
+    );
+}
+
+#[test]
+fn replace_without_source_fields_can_still_use_the_raw_value() {
+    let value = parse_json_payload(r#"{"users":[{"phone":"+1-555-1234"}]}"#)
+        .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].phone"],
+        "pii": [
+            {
+                "path": "users[].phone",
+                "action": "replace",
+                "template": "PHONE-{value}"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+    assert_eq!(
+        filtered["users"][0]["phone"].as_str(),
+        Some("PHONE-+1-555-1234")
+    );
+}
+
+#[test]
 fn applies_deterministic_uuid_and_wildcard_precedence_to_all_array_items() {
     let value = parse_json_payload(
         r#"{"users":[{"email":"ada@example.com","ssn":5},{"email":"grace@example.com","ssn":42}]}"#,

@@ -64,6 +64,8 @@ When updating an existing installed config after creation, prefer DTK-native con
 
 - `dtk config allow add <config> <field>`
 - `dtk config allow remove <config> <field>`
+- `dtk config pii add <config> <path> <mask|uuid|replace> [options]`
+- `dtk config pii remove <config> <path>`
 - `dtk config delete <config>`
 
 ## Rule Design Notes

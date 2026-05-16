@@ -134,6 +134,7 @@ fn print_usage() {
     eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
     eprintln!("  dtk config list");
     eprintln!("  dtk config allow <add|remove> <config> <field>");
+    eprintln!("  dtk config pii <add|remove> <config> <path> [options]");
     eprintln!("  dtk config delete <config>");
     eprintln!("  dtk cache <list|show> [ref_id]");
     eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");

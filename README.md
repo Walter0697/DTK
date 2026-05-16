@@ -108,6 +108,8 @@ If you decide the field should be exposed by default next time, update the confi
 dtk config list
 dtk config allow add dummyjson_users.json '[].hair.color'
 dtk config allow remove dummyjson_users.json '[].hair.color'
+dtk config pii add dummyjson_users.json '[].email' replace --source-fields firstName,lastName --template '{firstName}.{lastName}@example.com'
+dtk config pii remove dummyjson_users.json '[].email'
 dtk config delete dummyjson_users.json
 ```
 
@@ -152,6 +154,7 @@ They help by:
 - drafting the matching DTK config
 - registering the hook rule for later reuse
 - tuning an existing config by expanding or shrinking its allowlist with `dtk config allow add` and `dtk config allow remove`
+- tuning PII rules with `dtk config pii add` and `dtk config pii remove`
 
 How to use it:
 
