@@ -1,0 +1,16 @@
+{
+  "id": "pyproject_manifest_toml",
+  "name": "pyproject_manifest_toml",
+  "source": "python",
+  "request": "cat pyproject.toml",
+  "notes": "Keep the project identity and Python compatibility fields from a typical Python project manifest while trimming formatter, test, and type-check configuration.",
+  "format": "toml",
+  "allow": [
+    "project.name",
+    "project.version",
+    "project.description",
+    "project.requires-python",
+    "project.authors[].name",
+    "project.maintainers[].name"
+  ]
+}

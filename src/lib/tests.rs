@@ -95,6 +95,10 @@ fn parses_structured_format_aliases() {
         Some(StructuredFormat::Yaml)
     );
     assert_eq!(parse_structured_format("yml"), Some(StructuredFormat::Yaml));
+    assert_eq!(
+        parse_structured_format("toml"),
+        Some(StructuredFormat::Toml)
+    );
     assert_eq!(parse_structured_format("csv"), None);
 }
 
@@ -120,6 +124,73 @@ fn respects_yaml_format_hint() {
 #[test]
 fn json_format_hint_does_not_fallback_to_yaml() {
     let payload = "users:\n  - firstName: Emily\n    age: 28\n";
+
+    assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
+}
+
+#[test]
+fn parses_structured_toml_payload() {
+    let payload = r#"
+version = 4
+
+[[package]]
+name = "dtk"
+version = "0.0.2"
+source = "path+file:///home/git/DTK"
+dependencies = ["serde", "toml"]
+"#;
+
+    let parsed = parse_structured_payload(payload);
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "version": 4,
+            "package": [
+                {
+                    "name": "dtk",
+                    "version": "0.0.2",
+                    "source": "path+file:///home/git/DTK",
+                    "dependencies": [
+                        "serde",
+                        "toml"
+                    ]
+                }
+            ]
+        }))
+    );
+}
+
+#[test]
+fn respects_toml_format_hint() {
+    let payload = r#"
+[[package]]
+name = "dtk"
+version = "0.0.2"
+"#;
+
+    let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Toml));
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "package": [
+                {
+                    "name": "dtk",
+                    "version": "0.0.2"
+                }
+            ]
+        }))
+    );
+}
+
+#[test]
+fn json_format_hint_does_not_fallback_to_toml() {
+    let payload = r#"
+[[package]]
+name = "dtk"
+version = "0.0.2"
+"#;
 
     assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
 }

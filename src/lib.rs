@@ -23,6 +23,13 @@ use sha2::{Digest, Sha256};
 const DTK_GUIDE: &str = include_str!("../DTK.md");
 const DTK_CONFIG_ASSISTANT_SKILL: &str = include_str!("../skills/dtk/SKILL.md");
 const DUMMYJSON_USERS_CONFIG: &str = include_str!("../samples/config.dummyjson.users.json");
+const CARGO_LOCK_PACKAGES_CONFIG: &str =
+    include_str!("../samples/config.cargo_lock_packages.toml.json");
+const CARGO_LOCK_PACKAGES_PAYLOAD: &str =
+    include_str!("../samples/payload.cargo_lock_packages.toml");
+const PYPROJECT_MANIFEST_CONFIG: &str =
+    include_str!("../samples/config.pyproject_manifest.toml.json");
+const PYPROJECT_MANIFEST_PAYLOAD: &str = include_str!("../samples/payload.pyproject_manifest.toml");
 const KUBERNETES_DEPLOYMENT_YAML_CONFIG: &str =
     include_str!("../samples/config.kubernetes.deployment.yaml.json");
 const KUBERNETES_DEPLOYMENT_YAML_PAYLOAD: &str =
@@ -30,6 +37,8 @@ const KUBERNETES_DEPLOYMENT_YAML_PAYLOAD: &str =
 const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
 const USAGE_SCHEMA_VERSION: i32 = 2;
 pub const DEFAULT_SAMPLE_CONFIG_NAME: &str = "dummyjson_users.json";
+pub const CARGO_LOCK_SAMPLE_CONFIG_NAME: &str = "cargo_lock_packages.toml.json";
+pub const PYPROJECT_SAMPLE_CONFIG_NAME: &str = "pyproject_manifest.toml.json";
 pub const YAML_SAMPLE_CONFIG_NAME: &str = "kubernetes_deployment.yaml.json";
 static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +98,7 @@ pub struct FilterConfig {
 pub enum StructuredFormat {
     Json,
     Yaml,
+    Toml,
 }
 
 impl StructuredFormat {
@@ -96,6 +106,7 @@ impl StructuredFormat {
         match value.trim().to_ascii_lowercase().as_str() {
             "json" => Some(Self::Json),
             "yaml" | "yml" => Some(Self::Yaml),
+            "toml" => Some(Self::Toml),
             _ => None,
         }
     }
@@ -269,7 +280,10 @@ pub fn parse_structured_payload_with_hint(
     match format {
         Some(StructuredFormat::Json) => parse_json_payload(text),
         Some(StructuredFormat::Yaml) => parse_yaml_payload(text),
-        None => parse_json_payload(text).or_else(|| parse_yaml_payload(text)),
+        Some(StructuredFormat::Toml) => parse_toml_payload(text),
+        None => parse_json_payload(text)
+            .or_else(|| parse_yaml_payload(text))
+            .or_else(|| parse_toml_payload(text)),
     }
 }
 
@@ -283,6 +297,38 @@ fn parse_yaml_payload(text: &str) -> Option<Value> {
         Ok(value @ Value::Object(_)) | Ok(value @ Value::Array(_)) => Some(value),
         Ok(_) => None,
         Err(_) => None,
+    }
+}
+
+fn parse_toml_payload(text: &str) -> Option<Value> {
+    let stripped = text.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+
+    match toml::from_str::<toml::Value>(stripped) {
+        Ok(value) => toml_value_to_json(value),
+        Err(_) => None,
+    }
+}
+
+fn toml_value_to_json(value: toml::Value) -> Option<Value> {
+    match value {
+        toml::Value::String(value) => Some(Value::String(value)),
+        toml::Value::Integer(value) => Some(Value::Number(value.into())),
+        toml::Value::Float(value) => serde_json::Number::from_f64(value).map(Value::Number),
+        toml::Value::Boolean(value) => Some(Value::Bool(value)),
+        toml::Value::Datetime(value) => Some(Value::String(value.to_string())),
+        toml::Value::Array(values) => values
+            .into_iter()
+            .map(toml_value_to_json)
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array),
+        toml::Value::Table(table) => table
+            .into_iter()
+            .map(|(key, value)| toml_value_to_json(value).map(|json| (key, json)))
+            .collect::<Option<serde_json::Map<_, _>>>()
+            .map(Value::Object),
     }
 }
 

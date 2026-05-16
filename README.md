@@ -18,7 +18,7 @@ dtk install-dummy
 
 Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
 Use `dtk install` for the default JSON dummyjson demo config.
-Use `dtk install-dummy` when you want the broader bundled sample set, including the YAML Kubernetes example config and sample payload.
+Use `dtk install-dummy` when you want the broader bundled sample set, including the TOML Cargo.lock-style example, a TOML Python manifest example, the YAML Kubernetes example config, and their sample payloads.
 
 The repo is pinned to the current stable Rust toolchain via `rust-toolchain.toml`. If your local `cargo` is too old and reports that `Cargo.lock` version `4` is unsupported, run `rustup update stable && rustup default stable` and retry.
 
@@ -29,7 +29,7 @@ dtk exec -- curl -sS https://dummyjson.com/users
 ```
 
 DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjson_users.json`, then uses it automatically when no explicit config is passed. It stores the original payload locally so you can recover more fields later.
-`dtk install-dummy` also installs `~/.config/dtk/configs/kubernetes_deployment.yaml.json` and a checked-in sample YAML payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
+`dtk install-dummy` also installs `~/.config/dtk/configs/cargo_lock_packages.toml.json`, `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/configs/pyproject_manifest.toml.json`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/configs/kubernetes_deployment.yaml.json`, and a checked-in sample YAML payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Before, the payload is the full API response:
 
@@ -203,13 +203,21 @@ DTK is useful when you want the model to see real data, not just a summary, with
 
 `dtk exec` also supports YAML command output when the command emits a YAML mapping or sequence. DTK parses it into the same filtered JSON surface and stores the original YAML for later retrieval.
 
-When a source needs an explicit parser choice, add an optional `format` field to the config, for example `"format": "yaml"`.
+`dtk exec` also supports TOML command output when the command emits a TOML table or array of tables. DTK parses it into the same filtered JSON surface and stores the original TOML for later retrieval.
+
+When a source needs an explicit parser choice, add an optional `format` field to the config, for example `"format": "yaml"` or `"format": "toml"`.
 
 Example:
 
 ```bash
 dtk exec --config kubectl_pods.yaml.json -- \
   kubectl get pods -o yaml
+
+dtk exec --config cargo_lock_packages.toml.json -- \
+  cat Cargo.lock
+
+dtk exec --config pyproject_manifest.toml.json -- \
+  cat pyproject.toml
 ```
 
 Examples:

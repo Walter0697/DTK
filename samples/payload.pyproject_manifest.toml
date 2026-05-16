@@ -1,0 +1,165 @@
+[project]
+name = "acme-api"
+version = "1.8.0"
+description = "Internal API package for account, billing, and analytics workflows"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111",
+  "pydantic>=2.8",
+  "sqlalchemy>=2.0",
+  "httpx>=0.27",
+  "uvicorn[standard]>=0.30",
+  "orjson>=3.10",
+  "structlog>=24.1",
+]
+
+[[project.authors]]
+name = "Platform Team"
+email = "platform@example.com"
+
+[[project.authors]]
+name = "API Working Group"
+email = "api-wg@example.com"
+
+[[project.maintainers]]
+name = "Release Engineering"
+email = "release@example.com"
+
+[[project.authors]]
+name = "Security Team"
+email = "security@example.com"
+
+[[project.maintainers]]
+name = "Developer Experience"
+email = "devex@example.com"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-httpx>=0.27",
+]
+test = [
+  "coverage[toml]>=7.6",
+  "hypothesis>=6.108",
+  "faker>=26.0",
+]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.25",
+]
+
+[build-system]
+requires = ["hatchling>=1.24", "wheel>=0.43"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["generated", "migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ANN", "S"]
+ignore = ["E501", "S101"]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.pytest.ini_options]
+addopts = "-q --maxfail=1 --disable-warnings --strict-markers"
+testpaths = ["tests", "integration"]
+markers = [
+  "slow: long-running integration coverage",
+  "integration: exercises service boundaries",
+  "smoke: fast release gate",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_return_any = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+branch = true
+source = ["acme_api"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+combine_as_imports = true
+skip_glob = ["generated/*", "migrations/*"]
+
+[tool.uv]
+cache-dir = ".uv-cache"
+offline = false
+default-groups = ["dev", "test"]
+
+[[tool.uv.index]]
+name = "internal"
+url = "https://packages.example.com/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["acme_api"]
+only-include = ["acme_api", "pyproject.toml"]
+
+[tool.hatch.envs.default]
+dependencies = ["pytest>=8.2", "ruff>=0.6", "mypy>=1.11"]
+scripts = { test = "pytest", lint = "ruff check .", typecheck = "mypy acme_api" }
+
+[tool.hatch.envs.ci]
+dependencies = ["pytest>=8.2", "coverage[toml]>=7.6"]
+scripts = { test = "pytest", coverage = "coverage run -m pytest" }
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+tag_format = "v{version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.0.0"
+tag_format = "v$version"
+
+[tool.mypy.plugins.django-stubs]
+django_settings_module = "acme_api.settings"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options.filterwarnings]
+error = [
+  "ignore::DeprecationWarning",
+  "ignore::PendingDeprecationWarning",
+]

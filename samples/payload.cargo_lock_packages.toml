@@ -1,0 +1,219 @@
+version = 4
+checksum = "root-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "dtk"
+version = "0.0.2"
+source = "path+file:///home/git/DTK"
+checksum = "1111111111111111111111111111111111111111111111111111111111111111"
+dependencies = [
+  "dialoguer",
+  "rusqlite",
+  "serde",
+  "serde_json",
+  "serde_yaml",
+  "sha2",
+  "toml",
+]
+description = "Dynamic Token Killer for AI assistants"
+license = "MIT"
+repository = "https://github.com/Walter0697/DTK"
+features = ["default", "install", "exec", "retrieve", "gain", "config"]
+
+[[package]]
+name = "dialoguer"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2222222222222222222222222222222222222222222222222222222222222222"
+dependencies = ["console", "shell-words", "tempfile", "fuzzy-matcher"]
+description = "Interactively prompts the user"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/console-rs/dialoguer"
+features = ["editor", "fuzzy-select", "password"]
+
+[[package]]
+name = "rusqlite"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3333333333333333333333333333333333333333333333333333333333333333"
+dependencies = ["bitflags", "libsqlite3-sys", "smallvec", "fallible-iterator"]
+description = "Ergonomic wrapper for SQLite"
+license = "MIT"
+repository = "https://github.com/rusqlite/rusqlite"
+features = ["bundled", "modern_sqlite", "unlock_notify"]
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4444444444444444444444444444444444444444444444444444444444444444"
+dependencies = ["serde_derive"]
+description = "Serialization framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/serde"
+features = ["derive", "std"]
+
+[[package]]
+name = "serde_json"
+version = "1.0.145"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5555555555555555555555555555555555555555555555555555555555555555"
+dependencies = ["itoa", "memchr", "ryu", "serde"]
+description = "JSON serialization"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/json"
+features = ["preserve_order", "raw_value", "std"]
+
+[[package]]
+name = "serde_yaml"
+version = "0.9.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6666666666666666666666666666666666666666666666666666666666666666"
+dependencies = ["indexmap", "ryu", "unsafe-libyaml"]
+description = "YAML serialization"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dtolnay/serde-yaml"
+features = ["indexmap", "preserve_order"]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7777777777777777777777777777777777777777777777777777777777777777"
+dependencies = ["cfg-if", "cpufeatures", "digest", "block-buffer", "crypto-common"]
+description = "SHA-2 hash functions"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/RustCrypto/hashes"
+features = ["asm", "std"]
+
+[[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8888888888888888888888888888888888888888888888888888888888888888"
+dependencies = ["serde", "toml_edit"]
+description = "TOML parser"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/toml-rs/toml"
+features = ["parse", "display", "serde"]
+
+[[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9999999999999999999999999999999999999999999999999999999999999999"
+dependencies = ["unicode-width", "once_cell", "terminal-size"]
+description = "Terminal interaction helpers"
+license = "MIT"
+repository = "https://github.com/console-rs/console"
+features = ["ansi-parsing", "windows-console"]
+
+[[package]]
+name = "shell-words"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+dependencies = []
+description = "Shell command parsing"
+license = "MIT"
+repository = "https://github.com/rust-shell-words/rust-shell-words"
+features = ["std"]
+
+[[package]]
+name = "tempfile"
+version = "3.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+dependencies = ["cfg-if", "fastrand", "once_cell", "rustix"]
+description = "Temporary file utilities"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Stebalien/tempfile"
+features = ["default"]
+
+[[package]]
+name = "fuzzy-matcher"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+dependencies = ["thread_local", "lazy_static"]
+description = "Fuzzy string matching"
+license = "MIT"
+repository = "https://github.com/lotabout/fuzzy-matcher"
+features = ["clippy"]
+
+[[package]]
+name = "bitflags"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+dependencies = []
+description = "Macro for bit flags"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bitflags/bitflags"
+features = ["std"]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+dependencies = ["cc", "pkg-config", "vcpkg", "wasm-bindgen"]
+description = "SQLite FFI bindings"
+license = "MIT"
+repository = "https://github.com/rusqlite/rusqlite"
+features = ["bundled", "unlock_notify"]
+
+[[package]]
+name = "smallvec"
+version = "1.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+dependencies = []
+description = "Small vector optimization"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/servo/rust-smallvec"
+features = ["union", "const_generics"]
+
+[[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1010101010101010101010101010101010101010101010101010101010101010"
+dependencies = []
+description = "Iterator that can fail"
+license = "MIT"
+repository = "https://github.com/sfackler/rust-fallible-iterator"
+features = ["std"]
+
+[[package]]
+name = "indexmap"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1212121212121212121212121212121212121212121212121212121212121212"
+dependencies = ["equivalent", "hashbrown"]
+description = "Hash map with stable ordering"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/indexmap-rs/indexmap"
+features = ["serde", "std"]
+
+[[package]]
+name = "ryu"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1313131313131313131313131313131313131313131313131313131313131313"
+dependencies = []
+description = "Fast float to string conversion"
+license = "Apache-2.0 OR BSL-1.0"
+repository = "https://github.com/dtolnay/ryu"
+features = ["small"]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1414141414141414141414141414141414141414141414141414141414141414"
+dependencies = []
+description = "Unsafe libyaml bindings"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dtolnay/unsafe-libyaml"
+features = ["vendored"]
