@@ -2,8 +2,8 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dtk::{
-    recommendation_notices_for_retrieve, record_field_access, retrieve_original_payload,
-    runtime_store_dir, FieldAccessRecordInput,
+    apply_pii_transform, load_filter_config_for_ref, recommendation_notices_for_retrieve,
+    record_field_access, retrieve_original_payload, runtime_store_dir, FieldAccessRecordInput,
 };
 
 fn main() -> ExitCode {
@@ -93,6 +93,14 @@ fn main() -> ExitCode {
         Err(err) => {
             eprintln!("failed to retrieve payload for {ref_id}: {err}");
             return ExitCode::from(1);
+        }
+    };
+    let payload = match load_filter_config_for_ref(&ref_id, &store_dir) {
+        Ok(Some(config)) => apply_pii_transform(&payload, &config),
+        Ok(None) => payload,
+        Err(err) => {
+            eprintln!("failed to load PII config for {ref_id}: {err}");
+            payload
         }
     };
 

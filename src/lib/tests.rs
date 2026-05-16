@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use super::{
-    cleanup_expired_payloads, collect_field_paths, default_store_dir, end_session,
-    field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata, is_json_payload,
-    is_structured_payload, load_config_recommendations, load_filter_config,
+    apply_pii_transform, cleanup_expired_payloads, collect_field_paths, default_store_dir,
+    end_session, field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
+    is_json_payload, is_structured_payload, load_config_recommendations, load_filter_config,
     normalize_field_path_for_config, parse_json_payload, parse_structured_format,
     parse_structured_payload, parse_structured_payload_with_hint, platform_data_dir,
     preview_expired_payloads, recommendation_notices_for_exec, recommendation_notices_for_retrieve,
@@ -551,6 +551,7 @@ fn filters_array_payload_by_allowlist() {
             "[].title".to_string(),
             "[].created_by.username".to_string(),
         ],
+        pii: vec![],
     };
 
     let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
@@ -584,6 +585,7 @@ fn allowlist_filters_only_explicit_fields() {
         format: None,
         content_path: None,
         allow: vec!["title".to_string()],
+        pii: vec![],
     };
 
     let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
@@ -604,6 +606,7 @@ fn adds_metadata_to_object_payload() {
         format: None,
         content_path: None,
         allow: vec!["title".to_string()],
+        pii: vec![],
     };
 
     let filtered =
@@ -636,6 +639,7 @@ fn wraps_array_payload_with_metadata() {
         format: None,
         content_path: None,
         allow: vec!["[].id".to_string(), "[].title".to_string()],
+        pii: vec![],
     };
 
     let filtered =
@@ -676,6 +680,7 @@ fn exposes_nested_available_fields_in_metadata() {
         format: None,
         content_path: None,
         allow: vec!["users[].id".to_string()],
+        pii: vec![],
     };
 
     let filtered =
@@ -728,6 +733,7 @@ fn filters_content_path_subtree_while_preserving_envelope() {
             "[].firstName".to_string(),
             "[].lastName".to_string(),
         ],
+        pii: vec![],
     };
 
     let filtered =
@@ -782,6 +788,7 @@ fn filters_content_path_nested_subtree_when_parent_field_is_allowed() {
         format: None,
         content_path: Some("users".to_string()),
         allow: vec!["[].hair".to_string()],
+        pii: vec![],
     };
 
     let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
@@ -816,6 +823,7 @@ fn filters_wildcard_subtree_for_dynamic_object_keys() {
         format: None,
         content_path: None,
         allow: vec!["connections.**".to_string()],
+        pii: vec![],
     };
 
     let filtered = filter_json_payload(&value, &config).expect("expected filtered json");
@@ -1106,6 +1114,7 @@ fn resolves_filter_config_id_from_explicit_id_then_name_then_path() {
         format: None,
         content_path: None,
         allow: vec![],
+        pii: vec![],
     };
     let with_name = FilterConfig {
         id: None,
@@ -1116,6 +1125,7 @@ fn resolves_filter_config_id_from_explicit_id_then_name_then_path() {
         format: None,
         content_path: None,
         allow: vec![],
+        pii: vec![],
     };
     let anonymous = FilterConfig {
         id: None,
@@ -1126,6 +1136,7 @@ fn resolves_filter_config_id_from_explicit_id_then_name_then_path() {
         format: None,
         content_path: None,
         allow: vec![],
+        pii: vec![],
     };
 
     assert_eq!(
@@ -1231,6 +1242,7 @@ fn broader_allowlist_covers_deeper_fields() {
         format: None,
         content_path: Some("users".to_string()),
         allow: vec!["[].hair".to_string()],
+        pii: vec![],
     };
 
     assert!(field_is_allowlisted(&config, "users[].hair.color"));
@@ -1679,6 +1691,7 @@ fn filters_nested_array_fields_with_object_prefix() {
         format: None,
         content_path: None,
         allow: vec!["data[].id".to_string(), "nextCursor".to_string()],
+        pii: vec![],
     };
 
     let filtered =
@@ -1761,13 +1774,147 @@ fn loads_config_metadata_and_rules() {
         "source": "n8n",
         "request": "curl -sS ...",
         "notes": "workflow list",
-        "allow": ["data[].id", "nextCursor"]
+        "allow": ["data[].id", "nextCursor"],
+        "pii": [
+            {
+                "path": "data[].email",
+                "action": "mask"
+            }
+        ]
     }))
     .expect("expected config to deserialize");
 
     assert_eq!(config.name.as_deref(), Some("n8n_workflows_list"));
     assert_eq!(config.source.as_deref(), Some("n8n"));
     assert_eq!(config.allow, vec!["data[].id", "nextCursor"]);
+    assert_eq!(config.pii.len(), 1);
+}
+
+#[test]
+fn applies_pii_rules_after_filtering() {
+    let value = parse_json_payload(
+        r#"{"users":[{"email":"ada@example.com","id":1,"name":"Ada"}],"token":"abc"}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].email", "users[].id", "users[].name"],
+        "pii": [
+            {
+                "path": "users[].email",
+                "action": "mask"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(
+        filtered,
+        serde_json::json!({
+            "users": [
+                {
+                    "email": "[PII INFORMATION]",
+                    "id": 1,
+                    "name": "Ada"
+                }
+            ],
+            "_dtk": {
+                "available_fields": [
+                    "token",
+                    "users",
+                    "users[]",
+                    "users[].email",
+                    "users[].id",
+                    "users[].name"
+                ],
+                "content_path": "users",
+                "root_kind": "object",
+                "store_hint": "local"
+            }
+        })
+    );
+}
+
+#[test]
+fn applies_deterministic_uuid_and_wildcard_precedence_to_all_array_items() {
+    let value = parse_json_payload(
+        r#"{"users":[{"email":"ada@example.com","ssn":5},{"email":"grace@example.com","ssn":42}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].email", "users[].ssn"],
+        "pii": [
+            {
+                "path": "users[].**",
+                "action": "mask",
+                "replacement": "[REDACTED]"
+            },
+            {
+                "path": "users[].ssn",
+                "action": "uuid",
+                "method": "template",
+                "template": "DTK-GOVID-{value:04}"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(
+        filtered,
+        serde_json::json!({
+            "users": [
+                {
+                    "email": "[REDACTED]",
+                    "ssn": "DTK-GOVID-0005"
+                },
+                {
+                    "email": "[REDACTED]",
+                    "ssn": "DTK-GOVID-0042"
+                }
+            ],
+            "_dtk": {
+                "available_fields": [
+                    "users",
+                    "users[]",
+                    "users[].email",
+                    "users[].ssn"
+                ],
+                "content_path": "users",
+                "root_kind": "object",
+                "store_hint": "local"
+            }
+        })
+    );
+
+    let reapplied = apply_pii_transform(
+        &retrieve_json_payload(
+            &value,
+            &["users[].email".to_string(), "users[].ssn".to_string()],
+            None,
+            false,
+        )
+        .expect("expected retrieve"),
+        &config,
+    );
+
+    assert_eq!(
+        reapplied,
+        serde_json::json!({
+            "users": [
+                {
+                    "email": "[REDACTED]",
+                    "ssn": "DTK-GOVID-0005"
+                },
+                {
+                    "email": "[REDACTED]",
+                    "ssn": "DTK-GOVID-0042"
+                }
+            ]
+        })
+    );
 }
 
 #[test]

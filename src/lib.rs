@@ -71,12 +71,13 @@ static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub use config::{
-    add_or_update_hook_rule, load_filter_config, load_hook_rules, remove_hook_rules_for_config,
-    resolve_config_path, resolve_filter_config_id, write_filter_config, write_hook_rules,
+    add_or_update_hook_rule, load_filter_config, load_filter_config_for_ref, load_hook_rules,
+    remove_hook_rules_for_config, resolve_config_path, resolve_filter_config_id,
+    resolve_filter_config_identifier, write_filter_config, write_hook_rules,
 };
 use filter::normalize_repeated_field_path;
 pub use filter::{
-    collect_field_paths, field_is_allowlisted, filter_json_payload,
+    apply_pii_transform, collect_field_paths, field_is_allowlisted, filter_json_payload,
     filter_json_payload_with_metadata, filter_json_payload_with_ref,
     normalize_field_path_for_config, retrieve_json_payload,
 };
@@ -119,6 +120,35 @@ pub struct FilterConfig {
     pub content_path: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pii: Vec<PiiRule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiAction {
+    Mask,
+    Uuid,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiUuidMethod {
+    Default,
+    Random,
+    Template,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PiiRule {
+    pub path: String,
+    pub action: PiiAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<PiiUuidMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

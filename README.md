@@ -148,6 +148,7 @@ They help by:
 - inspecting the live payload
 - asking which fields should stay visible
 - asking which fields should be hidden
+- asking whether any visible sensitive fields should be protected with optional PII rules
 - drafting the matching DTK config
 - registering the hook rule for later reuse
 - tuning an existing config by expanding or shrinking its allowlist with `dtk config allow add` and `dtk config allow remove`
@@ -167,6 +168,7 @@ The setup flow is interactive. The agent can keep refining the config by asking 
 - which fields matter for decisions
 - which nested fields should stay visible
 - which fields should be hidden
+- whether sensitive fields should be masked or replaced with deterministic synthetic values
 - whether the payload root is an object or an array
 
 After a config already exists, DTK-native config commands can handle follow-up prompts like:
@@ -186,6 +188,8 @@ Please inspect the response, identify the fields that are likely needed, ask me 
 ```
 
 That makes the config more accurate than hardcoding one guess up front.
+
+PII handling is optional and config-driven. When present, DTK applies it after allowlisting and also when `dtk retrieve` projects fields back out of the stored payload. The default mask token is `[PII INFORMATION]`, but each rule can override it.
 
 ## RTK vs DTK
 

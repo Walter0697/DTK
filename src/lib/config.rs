@@ -1,4 +1,5 @@
-use crate::{FilterConfig, HookRule, HookRules};
+use crate::{default_config_dir, filtered_payload_path, FilterConfig, HookRule, HookRules};
+use serde_json::Value;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,36 @@ pub fn write_filter_config(path: impl AsRef<Path>, config: &FilterConfig) -> io:
         io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {err}"))
     })?;
     fs::write(path, format!("{content}\n"))
+}
+
+pub fn load_filter_config_for_ref(
+    ref_id: &str,
+    store_dir: impl AsRef<Path>,
+) -> io::Result<Option<FilterConfig>> {
+    let filtered_path = filtered_payload_path(store_dir, ref_id);
+    if !filtered_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(filtered_path)?;
+    let value = serde_json::from_str::<Value>(&content).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid filtered payload: {err}"),
+        )
+    })?;
+    let Some(config_id) = value
+        .get("_dtk")
+        .and_then(|metadata| metadata.get("config_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let path = resolve_filter_config_identifier(config_id)?;
+    load_filter_config(path).map(Some)
 }
 
 pub fn load_hook_rules(path: impl AsRef<Path>) -> std::io::Result<HookRules> {
@@ -127,6 +158,55 @@ pub fn resolve_config_path(path: impl AsRef<Path>) -> PathBuf {
     }
 
     global_path
+}
+
+pub fn resolve_filter_config_identifier(identifier: &str) -> io::Result<PathBuf> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "config identifier cannot be empty",
+        ));
+    }
+
+    let trimmed_path = Path::new(trimmed);
+    if trimmed_path.is_absolute() && trimmed_path.exists() {
+        return Ok(trimmed_path.to_path_buf());
+    }
+
+    let global_path = default_config_dir().join("configs").join(trimmed);
+    if global_path.exists() {
+        return Ok(global_path);
+    }
+
+    if trimmed_path.exists() {
+        return Ok(trimmed_path.to_path_buf());
+    }
+
+    let configs_dir = default_config_dir().join("configs");
+    if configs_dir.exists() {
+        for entry in fs::read_dir(&configs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let config = match load_filter_config(&path) {
+                Ok(config) => config,
+                Err(_) => continue,
+            };
+            let matches_id = config.id.as_deref().map(str::trim) == Some(trimmed);
+            let matches_name = config.name.as_deref().map(str::trim) == Some(trimmed);
+            if matches_id || matches_name {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("unknown config identifier: {trimmed}"),
+    ))
 }
 
 pub fn resolve_filter_config_id(config: &FilterConfig, config_path: impl AsRef<Path>) -> String {
