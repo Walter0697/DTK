@@ -18,7 +18,7 @@ dtk install-dummy
 
 Use `./install.sh` for the release-based install path and `./install-dev.sh` when you want to build and install from the local checkout.
 Use `dtk install` for the default JSON dummyjson demo config.
-Use `dtk install-dummy` when you want the broader bundled sample set, including the TOML Cargo.lock-style example, a TOML Python manifest example, a CSV inventory export example, an INI plugin registry example, an XML RSS feed example, a XAML ResourceDictionary example, the YAML Kubernetes example config, and their sample payloads.
+Use `dtk install-dummy` when you want the broader bundled sample set, including the TOML Cargo.lock-style example, a TOML Python manifest example, a Terraform-style HCL variables example, a CSV inventory export example, an INI plugin registry example, an XML RSS feed example, a XAML ResourceDictionary example, the YAML Kubernetes example config, and their sample payloads.
 
 The repo is pinned to the current stable Rust toolchain via `rust-toolchain.toml`. If your local `cargo` is too old and reports that `Cargo.lock` version `4` is unsupported, run `rustup update stable && rustup default stable` and retry.
 
@@ -29,7 +29,7 @@ dtk exec -- curl -sS https://dummyjson.com/users
 ```
 
 DTK installs a default dummyjson sample config at `~/.config/dtk/configs/dummyjson_users.json`, then uses it automatically when no explicit config is passed. It stores the original payload locally so you can recover more fields later.
-`dtk install-dummy` also installs `~/.config/dtk/configs/cargo_lock_packages.toml.json`, `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/configs/pyproject_manifest.toml.json`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/configs/csv_inventory_export.csv.json`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/configs/ini_plugin_registry.ini.json`, `~/.config/dtk/samples/ini_plugin_registry.ini`, `~/.config/dtk/configs/xml_rss_feed.xml.json`, `~/.config/dtk/samples/xml_rss_feed.xml`, `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, `~/.config/dtk/configs/kubernetes_deployment.yaml.json`, and a checked-in sample YAML payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
+`dtk install-dummy` also installs `~/.config/dtk/configs/cargo_lock_packages.toml.json`, `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/configs/pyproject_manifest.toml.json`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/configs/terraform_module_variables.tf.json`, `~/.config/dtk/samples/terraform_module_variables.tf`, `~/.config/dtk/configs/csv_inventory_export.csv.json`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/configs/ini_plugin_registry.ini.json`, `~/.config/dtk/samples/ini_plugin_registry.ini`, `~/.config/dtk/configs/xml_rss_feed.xml.json`, `~/.config/dtk/samples/xml_rss_feed.xml`, `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, `~/.config/dtk/configs/kubernetes_deployment.yaml.json`, and a checked-in sample YAML payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Before, the payload is the full API response:
 
@@ -207,13 +207,17 @@ DTK is useful when you want the model to see real data, not just a summary, with
 
 `dtk exec` also supports XAML/XML command output when the command emits a well-formed XML document. DTK parses it into the same filtered JSON surface and stores the original XML for later retrieval. This is practical for WPF, WinUI, MAUI, and other .NET UI files such as `App.xaml` or resource dictionaries.
 
-When a source needs an explicit parser choice, add an optional `format` field to the config, for example `"format": "yaml"`, `"format": "toml"`, `"format": "csv"`, `"format": "ini"`, `"format": "xml"`, or `"format": "xaml"`.
+`dtk exec` also supports Terraform-style HCL command output when the command emits repeated blocks such as `variable` definitions. DTK parses it into the same filtered JSON surface and stores the original HCL for later retrieval. This is practical for reusable module inputs in `variables.tf`.
+
+When a source needs an explicit parser choice, add an optional `format` field to the config, for example `"format": "yaml"`, `"format": "toml"`, `"format": "hcl"`, `"format": "csv"`, `"format": "ini"`, `"format": "xml"`, or `"format": "xaml"`.
 
 CSV is a good fit for inventory exports, reporting dumps, and other tabular data where repeated columns should be preserved but low-value fields can be trimmed away.
 
 INI is useful for plugin registries, desktop app settings, and legacy tools that organize repeated records under section headers.
 
 XML is useful for RSS feeds, manifests, and service catalogs that repeat nested items with verbose metadata.
+
+HCL is useful for Terraform modules and other infrastructure-as-code files that repeat the same variable, resource, or output structure with long descriptive text.
 
 Example:
 

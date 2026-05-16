@@ -9,6 +9,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - accepts JSON objects and arrays
 - accepts YAML mappings and sequences
 - accepts TOML tables and arrays of tables
+- accepts Terraform-style HCL blocks
 - accepts XAML / XML documents
 - filters fields with allowlist rules
 - stores the original payload locally for recovery
@@ -43,7 +44,7 @@ By default, user configs should live under the global DTK config directory, not 
 On Unix-like systems that is `~/.config/dtk/`; use `DTK_CONFIG_DIR` to override it.
 Place source configs under `~/.config/dtk/configs/`.
 `dtk install` seeds a default config at `~/.config/dtk/configs/dummyjson_users.json` so the agent can reuse it later.
-`dtk install-dummy` installs the full bundled sample set, which currently includes a Cargo.lock-style TOML example config at `~/.config/dtk/configs/cargo_lock_packages.toml.json`, a TOML Python manifest example config at `~/.config/dtk/configs/pyproject_manifest.toml.json`, a CSV inventory export example config at `~/.config/dtk/configs/csv_inventory_export.csv.json`, an INI plugin registry example config at `~/.config/dtk/configs/ini_plugin_registry.ini.json`, an XML RSS feed example config at `~/.config/dtk/configs/xml_rss_feed.xml.json`, a XAML ResourceDictionary example config at `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, their sample payloads at `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/samples/ini_plugin_registry.ini`, `~/.config/dtk/samples/xml_rss_feed.xml`, and `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, plus the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` with a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
+`dtk install-dummy` installs the full bundled sample set, which currently includes a Cargo.lock-style TOML example config at `~/.config/dtk/configs/cargo_lock_packages.toml.json`, a TOML Python manifest example config at `~/.config/dtk/configs/pyproject_manifest.toml.json`, a Terraform-style HCL variables example config at `~/.config/dtk/configs/terraform_module_variables.tf.json`, a CSV inventory export example config at `~/.config/dtk/configs/csv_inventory_export.csv.json`, an INI plugin registry example config at `~/.config/dtk/configs/ini_plugin_registry.ini.json`, an XML RSS feed example config at `~/.config/dtk/configs/xml_rss_feed.xml.json`, a XAML ResourceDictionary example config at `~/.config/dtk/configs/xaml_resource_dictionary.xaml.json`, their sample payloads at `~/.config/dtk/samples/cargo_lock_packages.toml`, `~/.config/dtk/samples/pyproject_manifest.toml`, `~/.config/dtk/samples/terraform_module_variables.tf`, `~/.config/dtk/samples/csv_inventory_export.csv`, `~/.config/dtk/samples/ini_plugin_registry.ini`, `~/.config/dtk/samples/xml_rss_feed.xml`, and `~/.config/dtk/samples/xaml_resource_dictionary.xaml`, plus the Kubernetes YAML example config at `~/.config/dtk/configs/kubernetes_deployment.yaml.json` with a sample payload at `~/.config/dtk/samples/kubernetes_deployment.yaml`.
 
 Recommended fields:
 
@@ -51,7 +52,7 @@ Recommended fields:
 - `source`
 - `request`
 - `notes`
-- `format` (optional parser override such as `json`, `yaml`, `toml`, `csv`, `ini`, `xml`, or `xaml`)
+- `format` (optional parser override such as `json`, `yaml`, `toml`, `hcl`, `csv`, `ini`, `xml`, or `xaml`)
 - `content_path`
 - `allow`
 
@@ -141,6 +142,11 @@ XML is useful for repeated nested feeds and manifests:
 
 dtk exec --config xml_rss_feed.xml.json -- \
   cat feed.xml
+
+HCL is useful for repeated Terraform module variables:
+
+dtk exec --config terraform_module_variables.tf.json -- \
+  cat variables.tf
 
 dtk retrieve dtk_1234567890abcdef users[].address,users[].age
 

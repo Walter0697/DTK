@@ -1,0 +1,14 @@
+{
+  "id": "terraform_module_variables",
+  "name": "terraform_module_variables",
+  "source": "infra",
+  "request": "cat variables.tf",
+  "notes": "Keep the variable name, type, and default from a repeated Terraform-style HCL module input file while trimming long descriptions and rollout notes.",
+  "format": "hcl",
+  "content_path": "variable",
+  "allow": [
+    "[].name",
+    "[].type",
+    "[].default"
+  ]
+}

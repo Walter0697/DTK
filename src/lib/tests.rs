@@ -99,6 +99,8 @@ fn parses_structured_format_aliases() {
         parse_structured_format("toml"),
         Some(StructuredFormat::Toml)
     );
+    assert_eq!(parse_structured_format("hcl"), Some(StructuredFormat::Hcl));
+    assert_eq!(parse_structured_format("tf"), Some(StructuredFormat::Hcl));
     assert_eq!(parse_structured_format("csv"), Some(StructuredFormat::Csv));
     assert_eq!(parse_structured_format("ini"), Some(StructuredFormat::Ini));
     assert_eq!(
@@ -132,6 +134,60 @@ fn json_format_hint_does_not_fallback_to_yaml() {
     let payload = "users:\n  - firstName: Emily\n    age: 28\n";
 
     assert!(parse_structured_payload_with_hint(payload, Some(StructuredFormat::Json)).is_none());
+}
+
+#[test]
+fn detects_structured_hcl_payload() {
+    let payload = r#"
+variable "app_name" {
+  type = string
+}
+"#;
+
+    assert!(is_structured_payload(payload));
+}
+
+#[test]
+fn parses_structured_hcl_payload() {
+    let payload = r#"
+variable "app_name" {
+  type        = string
+  default     = "atlas-platform"
+  description = "Primary application name used in release metadata."
+  nullable    = false
+}
+
+variable "desired_capacity" {
+  type        = number
+  default     = 4
+  description = "Target number of instances to keep online."
+  nullable    = false
+}
+"#;
+
+    let parsed = parse_structured_payload_with_hint(payload, Some(StructuredFormat::Hcl));
+
+    assert_eq!(
+        parsed,
+        Some(serde_json::json!({
+            "variable": [
+                {
+                    "name": "app_name",
+                    "type": "string",
+                    "default": "atlas-platform",
+                    "description": "Primary application name used in release metadata.",
+                    "nullable": false
+                },
+                {
+                    "name": "desired_capacity",
+                    "type": "number",
+                    "default": 4,
+                    "description": "Target number of instances to keep online.",
+                    "nullable": false
+                }
+            ]
+        }))
+    );
 }
 
 #[test]
