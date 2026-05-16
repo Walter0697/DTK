@@ -366,13 +366,6 @@ While a session is active, DTK writes the session ticket into each metrics row. 
 
 Branch protection and PR-only merges are configured on GitHub, not in the repo itself. See [CONTRIBUTING.md](CONTRIBUTING.md) for the expected workflow.
 
-## Roadmap
-
-1. Expand DTK beyond the current `curl` / JSON-focused workflow.
-2. Add PII-aware filtering.
-3. Improve TUI and GUI management.
-4. Add more release and distribution methods.
-
 ## License
 
 MIT
