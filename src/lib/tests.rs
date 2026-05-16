@@ -1946,6 +1946,44 @@ fn replace_without_source_fields_can_still_use_the_raw_value() {
 }
 
 #[test]
+fn applies_pii_rules_with_content_path_relative_rules() {
+    let value = parse_json_payload(
+        r#"{"limit":1,"users":[{"email":"ada@example.com","firstName":"Ada","lastName":"Lovelace","phone":"+1-555-1234"}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "content_path": "users",
+        "allow": ["[].email", "[].firstName", "[].lastName", "[].phone"],
+        "pii": [
+            {
+                "path": "[].email",
+                "action": "replace",
+                "source_fields": ["firstName", "lastName"],
+                "template": "{firstName}.{lastName}@example.com"
+            },
+            {
+                "path": "[].phone",
+                "action": "uuid",
+                "method": "template",
+                "template": "DTK-PHONE-{uuid}"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(
+        filtered["users"][0]["email"].as_str(),
+        Some("Ada.Lovelace@example.com")
+    );
+    assert!(filtered["users"][0]["phone"]
+        .as_str()
+        .expect("phone string")
+        .starts_with("DTK-PHONE-"));
+}
+
+#[test]
 fn applies_deterministic_uuid_and_wildcard_precedence_to_all_array_items() {
     let value = parse_json_payload(
         r#"{"users":[{"email":"ada@example.com","ssn":5},{"email":"grace@example.com","ssn":42}]}"#,

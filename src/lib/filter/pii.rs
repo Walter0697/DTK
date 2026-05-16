@@ -40,7 +40,7 @@ pub fn apply_pii_transform(value: &Value, config: &FilterConfig) -> Value {
         return value.clone();
     }
 
-    transform_value(value, &[], None, &rules)
+    transform_value(value, &[], None, &rules, config)
 }
 
 fn compile_rules(config: &FilterConfig) -> Vec<CompiledPiiRule> {
@@ -85,6 +85,7 @@ fn transform_value(
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
     rules: &[CompiledPiiRule],
+    config: &FilterConfig,
 ) -> Value {
     match value {
         Value::Object(map) => {
@@ -94,7 +95,7 @@ fn transform_value(
                 child_path.push(PathSegment::Key(key.clone()));
                 transformed.insert(
                     key.clone(),
-                    transform_value(child, &child_path, Some(value), rules),
+                    transform_value(child, &child_path, Some(value), rules, config),
                 );
             }
             Value::Object(transformed)
@@ -104,13 +105,19 @@ fn transform_value(
             for (index, child) in items.iter().enumerate() {
                 let mut child_path = current_path.to_vec();
                 child_path.push(PathSegment::Index(index));
-                transformed.push(transform_value(child, &child_path, Some(value), rules));
+                transformed.push(transform_value(
+                    child,
+                    &child_path,
+                    Some(value),
+                    rules,
+                    config,
+                ));
             }
             Value::Array(transformed)
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-            match select_best_rule(current_path, rules) {
-                Some(rule) => transform_scalar(value, current_path, parent_context, rule),
+            match select_best_rule(current_path, config, rules) {
+                Some(rule) => transform_scalar(value, current_path, parent_context, rule, config),
                 None => value.clone(),
             }
         }
@@ -119,12 +126,14 @@ fn transform_value(
 
 fn select_best_rule<'a>(
     current_path: &[PathSegment],
+    config: &FilterConfig,
     rules: &'a [CompiledPiiRule],
 ) -> Option<&'a CompiledPiiRule> {
+    let normalized_current_path = normalize_current_path_for_config(current_path, config);
     let mut best: Option<&CompiledPiiRule> = None;
 
     for rule in rules {
-        if !rule.pattern.covers_path(current_path) {
+        if !rule.pattern.covers_path(&normalized_current_path) {
             continue;
         }
 
@@ -156,6 +165,7 @@ fn transform_scalar(
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
     rule: &CompiledPiiRule,
+    config: &FilterConfig,
 ) -> Value {
     match rule.rule.action {
         PiiAction::Mask => Value::String(
@@ -164,12 +174,13 @@ fn transform_scalar(
                 .clone()
                 .unwrap_or_else(|| "[PII INFORMATION]".to_string()),
         ),
-        PiiAction::Uuid => Value::String(render_uuid_value(value, current_path, rule)),
+        PiiAction::Uuid => Value::String(render_uuid_value(value, current_path, rule, config)),
         PiiAction::Replace => Value::String(render_replace_value(
             value,
             current_path,
             parent_context,
             rule,
+            config,
         )),
     }
 }
@@ -178,9 +189,11 @@ fn render_uuid_value(
     value: &Value,
     current_path: &[PathSegment],
     rule: &CompiledPiiRule,
+    config: &FilterConfig,
 ) -> String {
     let raw_value = scalar_to_string(value);
-    let path = render_field_path(current_path);
+    let normalized_current_path = normalize_current_path_for_config(current_path, config);
+    let path = render_field_path(&normalized_current_path);
     let base_seed = format!("{}|{}|{}", rule.rule.path.trim(), path, raw_value);
     let deterministic_uuid = uuid_like_from_seed(&base_seed);
 
@@ -213,9 +226,11 @@ fn render_replace_value(
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
     rule: &CompiledPiiRule,
+    config: &FilterConfig,
 ) -> String {
     let raw_value = scalar_to_string(value);
-    let path = render_field_path(current_path);
+    let normalized_current_path = normalize_current_path_for_config(current_path, config);
+    let path = render_field_path(&normalized_current_path);
     let base_seed = format!("{}|{}|{}", rule.rule.path.trim(), path, raw_value);
     let sources = resolve_source_fields(parent_context, &rule.rule.source_fields);
 
@@ -270,6 +285,35 @@ fn resolve_relative_value(value: &Value, field: &str) -> Option<String> {
     let pattern = PathPattern::parse(field);
     let resolved = resolve_pattern_value(value, &pattern.segments)?;
     Some(scalar_to_string(&resolved))
+}
+
+fn normalize_current_path_for_config(
+    current_path: &[PathSegment],
+    config: &FilterConfig,
+) -> Vec<PathSegment> {
+    let rendered = render_field_path(current_path);
+    let normalized = match config
+        .content_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(content_path) => {
+            if let Some(remainder) = rendered.strip_prefix(content_path) {
+                if remainder.is_empty() || remainder.starts_with('.') || remainder.starts_with('[')
+                {
+                    remainder.trim_start_matches('.').to_string()
+                } else {
+                    rendered
+                }
+            } else {
+                rendered
+            }
+        }
+        None => rendered,
+    };
+
+    PathPattern::parse(&normalized).segments
 }
 
 fn resolve_pattern_value<'a>(value: &'a Value, segments: &[PathSegment]) -> Option<&'a Value> {
