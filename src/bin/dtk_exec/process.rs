@@ -1,9 +1,10 @@
 use dtk::{
-    default_store_dir, filter_json_payload_with_ref, load_filter_config, parse_structured_format,
-    parse_structured_payload_with_hint, recommendation_notices_for_exec, record_exec_metric_issue,
-    record_exec_metrics, resolve_config_path, resolve_filter_config_id, runtime_store_dir,
-    store_filtered_payload, store_original_payload_with_retention, summarize_command_signature,
-    token_count_for_content, ExecMetricIssueInput, ExecMetricsInput,
+    default_store_dir, detect_structured_format, filter_json_payload_with_ref_and_format,
+    load_filter_config, parse_structured_format, parse_structured_payload_with_hint,
+    recommendation_notices_for_exec, record_exec_metric_issue, record_exec_metrics,
+    resolve_config_path, resolve_filter_config_id, runtime_store_dir, store_filtered_payload,
+    store_original_payload_with_retention, summarize_command_signature, token_count_for_content,
+    ExecMetricIssueInput, ExecMetricsInput, StructuredFormat,
 };
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,6 +47,11 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
         None => None,
     };
 
+    let detected_format = match format_hint {
+        Some(format) => Some(format),
+        None => detect_structured_format(&stdout_text),
+    };
+
     if let Some(value) = parse_structured_payload_with_hint(&stdout_text, format_hint) {
         let config_id = resolve_filter_config_id(&config, &resolved_config_path);
         let config_path_text = resolved_config_path.to_string_lossy().to_string();
@@ -74,7 +80,9 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
             }
         };
 
-        let Some(filtered) = filter_json_payload_with_ref(&value, &config, &ref_id) else {
+        let Some(filtered) =
+            filter_json_payload_with_ref_and_format(&value, &config, &ref_id, detected_format)
+        else {
             eprintln!("filtered payload is empty");
             return ExitCode::from(1);
         };
@@ -101,7 +109,7 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
         if let Some(signature) = summarize_command_signature(&signature_args) {
             let original_tokens = token_count_for_content(&stdout_text);
             let filtered_tokens_raw = token_count_for_content(&filtered_text);
-            let use_original_output = !matches!(format_hint, Some(dtk::StructuredFormat::Csv))
+            let use_original_output = !matches!(format_hint, Some(StructuredFormat::Csv))
                 && payload::should_return_original_output(original_tokens, filtered_tokens_raw);
             let emitted_filtered_tokens = if use_original_output {
                 original_tokens

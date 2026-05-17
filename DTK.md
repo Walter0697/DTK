@@ -15,6 +15,7 @@ It reduces model-facing payloads while preserving recoverability of the original
 - filters fields with allowlist rules
 - stores the original payload locally for recovery
 - adds `_dtk` metadata with a `ref_id`, field inventory, and content path hints
+- adds `_dtk.format` for non-JSON source formats so the agent can preserve the native target syntax on write-back
 - supports cleanup of expired raw payloads
 
 ## Current Commands
@@ -81,6 +82,7 @@ Example:
 ## Agent Guidance
 
 - treat `_dtk` as metadata, not user data
+- read `_dtk.format` when present before generating an edit or request body
 - use `ref_id` to recover the original payload when needed
 - read `root_kind` and `item_kind` before assuming array access
 - use `available_fields` to see the full flattened field inventory

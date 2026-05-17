@@ -96,6 +96,25 @@ After DTK filters it, the agent sees a smaller `_dtk` surface:
 }
 ```
 
+For non-JSON sources, `_dtk.format` is included so the agent can preserve the native write-back syntax:
+
+```json
+{
+  "_dtk": {
+    "ref_id": "dtk_...",
+    "format": "yaml",
+    "available_fields": ["items[]", "items[].name", "items[].enabled"],
+    "content_path": "items"
+  },
+  "items": [
+    {
+      "name": "api-gateway",
+      "enabled": true
+    }
+  ]
+}
+```
+
 If you need more fields later, use the `_dtk.ref_id` from the filtered output:
 
 ```bash
@@ -136,6 +155,7 @@ DTK works as a structured routing layer, not a hard replacement for RTK.
 
 - It looks for a matching config or schema first.
 - If it finds one, DTK filters the payload, stores the original locally, and gives the agent a smaller surface plus a `ref_id` for later recovery.
+- If the source format is not JSON, DTK includes `_dtk.format` so the agent can preserve the native write-back syntax instead of defaulting to JSON.
 - If the filtered output would be larger than the original, DTK records that as a fallback issue and returns the original payload instead.
 - If it does not find a match, DTK returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
 

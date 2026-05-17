@@ -1,5 +1,5 @@
 use super::patterns::{render_field_path, PathSegment};
-use crate::FilterConfig;
+use crate::{FilterConfig, StructuredFormat};
 use serde_json::Value;
 
 pub(super) fn apply_filter_metadata(
@@ -7,6 +7,7 @@ pub(super) fn apply_filter_metadata(
     filtered: &Value,
     ref_id: Option<&str>,
     config: Option<&FilterConfig>,
+    format: Option<StructuredFormat>,
 ) -> Value {
     let metadata = surface_metadata(original);
     let config_id = config.and_then(|config| {
@@ -23,13 +24,13 @@ pub(super) fn apply_filter_metadata(
             let mut map = map.clone();
             map.insert(
                 "_dtk".to_string(),
-                merge_runtime_metadata(metadata, ref_id, config_id),
+                merge_runtime_metadata(metadata, ref_id, config_id, format),
             );
             Value::Object(map)
         }
         _ => serde_json::json!({
             "result": filtered,
-            "_dtk": merge_runtime_metadata(metadata, ref_id, config_id)
+            "_dtk": merge_runtime_metadata(metadata, ref_id, config_id, format)
         }),
     }
 }
@@ -218,7 +219,12 @@ fn array_item_kind(value: &Value) -> Option<String> {
     }
 }
 
-fn merge_runtime_metadata(metadata: Value, ref_id: Option<&str>, config_id: Option<&str>) -> Value {
+fn merge_runtime_metadata(
+    metadata: Value,
+    ref_id: Option<&str>,
+    config_id: Option<&str>,
+    format: Option<StructuredFormat>,
+) -> Value {
     match metadata {
         Value::Object(map) => {
             let mut map = map;
@@ -231,8 +237,23 @@ fn merge_runtime_metadata(metadata: Value, ref_id: Option<&str>, config_id: Opti
                     Value::String(config_id.to_string()),
                 );
             }
+            if let Some(format) = format_metadata_value(format) {
+                map.insert("format".to_string(), Value::String(format));
+            }
             Value::Object(map)
         }
         other => other,
+    }
+}
+
+fn format_metadata_value(format: Option<StructuredFormat>) -> Option<String> {
+    match format {
+        Some(StructuredFormat::Json) | None => None,
+        Some(StructuredFormat::Yaml) => Some("yaml".to_string()),
+        Some(StructuredFormat::Toml) => Some("toml".to_string()),
+        Some(StructuredFormat::Csv) => Some("csv".to_string()),
+        Some(StructuredFormat::Ini) => Some("ini".to_string()),
+        Some(StructuredFormat::Hcl) => Some("hcl".to_string()),
+        Some(StructuredFormat::Xaml) => Some("xaml".to_string()),
     }
 }

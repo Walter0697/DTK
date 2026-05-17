@@ -79,7 +79,8 @@ use filter::normalize_repeated_field_path;
 pub use filter::{
     apply_pii_transform, collect_field_paths, field_is_allowlisted, field_is_pii_covered,
     filter_json_payload, filter_json_payload_with_metadata, filter_json_payload_with_ref,
-    normalize_field_path_for_config, retrieve_json_payload,
+    filter_json_payload_with_ref_and_format, normalize_field_path_for_config,
+    retrieve_json_payload,
 };
 #[cfg(test)]
 use install::normalize_codex_agents_content;
@@ -323,6 +324,10 @@ pub fn parse_json_payload(text: &str) -> Option<Value> {
 
 pub fn parse_structured_payload(text: &str) -> Option<Value> {
     structured::parse_structured_payload(text)
+}
+
+pub fn detect_structured_format(text: &str) -> Option<StructuredFormat> {
+    structured::detect_structured_format(text)
 }
 
 pub fn parse_structured_payload_with_hint(
