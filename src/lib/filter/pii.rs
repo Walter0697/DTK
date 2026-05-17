@@ -40,7 +40,7 @@ pub fn apply_pii_transform(value: &Value, config: &FilterConfig) -> Value {
         return value.clone();
     }
 
-    transform_value(value, &[], None, &rules, config)
+    transform_value(value, &[], None, &[], &rules, config)
 }
 
 fn compile_rules(config: &FilterConfig) -> Vec<CompiledPiiRule> {
@@ -84,23 +84,35 @@ fn transform_value(
     value: &Value,
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
+    ancestors: &[&Value],
     rules: &[CompiledPiiRule],
     config: &FilterConfig,
 ) -> Value {
     match value {
         Value::Object(map) => {
+            let mut next_ancestors = ancestors.to_vec();
+            next_ancestors.push(value);
             let mut transformed = serde_json::Map::new();
             for (key, child) in map {
                 let mut child_path = current_path.to_vec();
                 child_path.push(PathSegment::Key(key.clone()));
                 transformed.insert(
                     key.clone(),
-                    transform_value(child, &child_path, Some(value), rules, config),
+                    transform_value(
+                        child,
+                        &child_path,
+                        Some(value),
+                        &next_ancestors,
+                        rules,
+                        config,
+                    ),
                 );
             }
             Value::Object(transformed)
         }
         Value::Array(items) => {
+            let mut next_ancestors = ancestors.to_vec();
+            next_ancestors.push(value);
             let mut transformed = Vec::with_capacity(items.len());
             for (index, child) in items.iter().enumerate() {
                 let mut child_path = current_path.to_vec();
@@ -109,6 +121,7 @@ fn transform_value(
                     child,
                     &child_path,
                     Some(value),
+                    &next_ancestors,
                     rules,
                     config,
                 ));
@@ -117,7 +130,9 @@ fn transform_value(
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
             match select_best_rule(current_path, config, rules) {
-                Some(rule) => transform_scalar(value, current_path, parent_context, rule, config),
+                Some(rule) => {
+                    transform_scalar(value, current_path, parent_context, ancestors, rule, config)
+                }
                 None => value.clone(),
             }
         }
@@ -164,6 +179,7 @@ fn transform_scalar(
     value: &Value,
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
+    ancestors: &[&Value],
     rule: &CompiledPiiRule,
     config: &FilterConfig,
 ) -> Value {
@@ -174,11 +190,18 @@ fn transform_scalar(
                 .clone()
                 .unwrap_or_else(|| "[PII INFORMATION]".to_string()),
         ),
-        PiiAction::Uuid => Value::String(render_uuid_value(value, current_path, rule, config)),
+        PiiAction::Uuid => Value::String(render_uuid_value(
+            value,
+            current_path,
+            ancestors,
+            rule,
+            config,
+        )),
         PiiAction::Replace => Value::String(render_replace_value(
             value,
             current_path,
             parent_context,
+            ancestors,
             rule,
             config,
         )),
@@ -188,6 +211,7 @@ fn transform_scalar(
 fn render_uuid_value(
     value: &Value,
     current_path: &[PathSegment],
+    ancestors: &[&Value],
     rule: &CompiledPiiRule,
     config: &FilterConfig,
 ) -> String {
@@ -216,7 +240,12 @@ fn render_uuid_value(
                 uuid: deterministic_uuid,
                 sources: BTreeMap::new(),
             };
-            render_template(rule.rule.template.as_deref().unwrap_or("{uuid}"), &context)
+            render_template(
+                rule.rule.template.as_deref().unwrap_or("{uuid}"),
+                &context,
+                ancestors,
+                None,
+            )
         }
     }
 }
@@ -225,6 +254,7 @@ fn render_replace_value(
     value: &Value,
     current_path: &[PathSegment],
     parent_context: Option<&Value>,
+    ancestors: &[&Value],
     rule: &CompiledPiiRule,
     config: &FilterConfig,
 ) -> String {
@@ -255,7 +285,7 @@ fn render_replace_value(
                 .join(" ")
         }
     } else {
-        render_template(template, &context)
+        render_template(template, &context, ancestors, parent_context)
     }
 }
 
@@ -330,34 +360,47 @@ fn resolve_pattern_value<'a>(value: &'a Value, segments: &[PathSegment]) -> Opti
     Some(current)
 }
 
-fn render_template(template: &str, context: &TemplateContext) -> String {
+fn render_template(
+    template: &str,
+    context: &TemplateContext,
+    ancestors: &[&Value],
+    parent_context: Option<&Value>,
+) -> String {
     let mut output = String::new();
     let mut chars = template.chars().peekable();
 
     while let Some(ch) = chars.next() {
         match ch {
-            '{' => {
-                if chars.peek() == Some(&'{') {
+            '{' | '[' => {
+                let close = if ch == '{' { '}' } else { ']' };
+                if chars.peek() == Some(&ch) {
                     chars.next();
-                    output.push('{');
+                    output.push(ch);
                     continue;
                 }
 
                 let mut placeholder = String::new();
                 while let Some(next) = chars.next() {
-                    if next == '}' {
+                    if next == close {
                         break;
                     }
                     placeholder.push(next);
                 }
-                output.push_str(&render_placeholder(&placeholder, context));
+                output.push_str(&render_placeholder(
+                    ch,
+                    close,
+                    &placeholder,
+                    context,
+                    ancestors,
+                    parent_context,
+                ));
             }
-            '}' => {
-                if chars.peek() == Some(&'}') {
+            '}' | ']' => {
+                if chars.peek() == Some(&ch) {
                     chars.next();
-                    output.push('}');
+                    output.push(ch);
                 } else {
-                    output.push('}');
+                    output.push(ch);
                 }
             }
             other => output.push(other),
@@ -367,23 +410,70 @@ fn render_template(template: &str, context: &TemplateContext) -> String {
     output
 }
 
-fn render_placeholder(placeholder: &str, context: &TemplateContext) -> String {
-    let (name, format_spec) = placeholder
+fn render_placeholder(
+    open: char,
+    close: char,
+    placeholder: &str,
+    context: &TemplateContext,
+    ancestors: &[&Value],
+    parent_context: Option<&Value>,
+) -> String {
+    let placeholder = placeholder.trim();
+    if placeholder.is_empty() {
+        return format!("{open}{close}");
+    }
+
+    let mut parts = placeholder
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let Some(base) = parts.next() else {
+        return format!("{open}{close}");
+    };
+    let filters: Vec<_> = parts.collect();
+
+    let (name, format_spec) = base
         .split_once(':')
         .map(|(name, spec)| (name.trim(), Some(spec.trim())))
-        .unwrap_or((placeholder.trim(), None));
+        .unwrap_or((base, None));
 
-    match name {
-        "value" => format_value_placeholder(&context.value, format_spec),
-        "path" => context.path.clone(),
-        "hash" => context.hash.clone(),
-        "uuid" => context.uuid.clone(),
+    let resolved = match name {
+        "value" => Some(format_value_placeholder(&context.value, format_spec)),
+        "path" => Some(context.path.clone()),
+        "hash" => Some(context.hash.clone()),
+        "uuid" => Some(context.uuid.clone()),
         other => context
             .sources
             .get(other)
             .cloned()
-            .unwrap_or_else(|| format!("{{{placeholder}}}")),
+            .or_else(|| {
+                ancestors
+                    .iter()
+                    .rev()
+                    .find_map(|value| resolve_relative_value(value, other))
+            })
+            .or_else(|| parent_context.and_then(|value| resolve_relative_value(value, other)))
+            .or_else(|| {
+                if placeholder_matches_current_path(&context.path, other) {
+                    Some(context.value.clone())
+                } else {
+                    None
+                }
+            }),
+    };
+
+    let Some(mut value) = resolved else {
+        return format!("{open}{placeholder}{close}");
+    };
+
+    for filter in filters {
+        let Some(filtered) = apply_string_filter(&value, filter) else {
+            return format!("{open}{placeholder}{close}");
+        };
+        value = filtered;
     }
+
+    value
 }
 
 fn format_value_placeholder(value: &str, format_spec: Option<&str>) -> String {
@@ -407,6 +497,141 @@ fn format_value_placeholder(value: &str, format_spec: Option<&str>) -> String {
     }
 
     value.to_string()
+}
+
+fn apply_string_filter(value: &str, filter: &str) -> Option<String> {
+    let (name, spec) = filter
+        .split_once(':')
+        .map(|(name, spec)| (name.trim(), Some(spec.trim())))
+        .unwrap_or((filter.trim(), None));
+
+    match name.to_ascii_lowercase().as_str() {
+        "lower" => Some(value.to_lowercase()),
+        "upper" => Some(value.to_uppercase()),
+        "trim" => Some(value.trim().to_string()),
+        "kebab" => Some(join_words(split_words(value), "-")),
+        "camel" => Some(to_camel_case(&split_words(value))),
+        "snake" => Some(join_words(split_words(value), "_")),
+        "substring" => apply_substring_filter(value, spec),
+        _ => None,
+    }
+}
+
+fn apply_substring_filter(value: &str, spec: Option<&str>) -> Option<String> {
+    let spec = spec?;
+    let mut parts = spec.split(',').map(str::trim);
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let len = match parts.next() {
+        Some(value) if !value.is_empty() => Some(value.parse::<usize>().ok()?),
+        Some(_) => None,
+        None => None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let chars: Vec<char> = value.chars().collect();
+    let start = start.min(chars.len());
+    let end = len
+        .map(|len| (start + len).min(chars.len()))
+        .unwrap_or(chars.len());
+    Some(chars[start..end].iter().collect())
+}
+
+fn placeholder_matches_current_path(current_path: &str, placeholder: &str) -> bool {
+    let current = PathPattern::parse(current_path);
+    let target = PathPattern::parse(placeholder);
+    !target.segments.is_empty() && current.segments.ends_with(&target.segments)
+}
+
+fn split_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_is_lower_or_digit = false;
+
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            let is_upper = ch.is_uppercase();
+            if is_upper && previous_is_lower_or_digit && !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            current.push(ch);
+            previous_is_lower_or_digit = ch.is_lowercase() || ch.is_numeric();
+        } else {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            previous_is_lower_or_digit = false;
+        }
+    }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+
+    words
+        .into_iter()
+        .flat_map(|word| split_camel_token(&word))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn split_camel_token(word: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = word.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        let next_is_lower = chars
+            .peek()
+            .map(|next| next.is_lowercase())
+            .unwrap_or(false);
+        let split_here = ch.is_uppercase()
+            && !current.is_empty()
+            && current
+                .chars()
+                .last()
+                .is_some_and(|prev| prev.is_lowercase() || prev.is_numeric())
+            && next_is_lower;
+        if split_here {
+            parts.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+fn join_words(words: Vec<String>, separator: &str) -> String {
+    words
+        .into_iter()
+        .map(|word| word.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn to_camel_case(words: &[String]) -> String {
+    let mut rendered = String::new();
+
+    for (index, word) in words.iter().enumerate() {
+        let lower = word.to_lowercase();
+        if index == 0 {
+            rendered.push_str(&lower);
+            continue;
+        }
+
+        let mut chars = lower.chars();
+        if let Some(first) = chars.next() {
+            rendered.extend(first.to_uppercase());
+            rendered.push_str(chars.as_str());
+        }
+    }
+
+    rendered
 }
 
 fn scalar_to_string(value: &Value) -> String {

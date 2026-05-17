@@ -26,14 +26,13 @@
     {
       "path": "[].email",
       "action": "replace",
-      "source_fields": ["firstName", "lastName"],
-      "template": "{firstName}.{lastName}@example.com"
+      "template": "[firstName|lower].[lastName|lower]@example.com"
     },
     {
       "path": "[].phone",
       "action": "uuid",
       "method": "template",
-      "template": "DTK-PHONE-{uuid}"
+      "template": "DTK-PHONE-[uuid]"
     }
   ]
 }

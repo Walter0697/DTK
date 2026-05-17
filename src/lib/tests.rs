@@ -1946,6 +1946,91 @@ fn replace_without_source_fields_can_still_use_the_raw_value() {
 }
 
 #[test]
+fn replace_templates_support_brackets_and_lowercase_filters() {
+    let value = parse_json_payload(
+        r#"{"users":[{"email":"ada@example.com","firstName":"Ada","lastName":"Lovelace","username":"adal"}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].firstName", "users[].lastName", "users[].username", "users[].email"],
+        "pii": [
+            {
+                "path": "users[].username",
+                "action": "replace",
+                "template": "[firstName]"
+            },
+            {
+                "path": "users[].email",
+                "action": "replace",
+                "template": "[firstName|lower].[lastName|lower]@example.com"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(filtered["users"][0]["username"].as_str(), Some("Ada"));
+    assert_eq!(
+        filtered["users"][0]["email"].as_str(),
+        Some("ada.lovelace@example.com")
+    );
+}
+
+#[test]
+fn replace_templates_support_trim_substring_kebab_and_camel_filters() {
+    let value = parse_json_payload(
+        r#"{"users":[{"firstName":"  Ada  ","lastName":"Lovelace","company":{"name":"Analytical Engines","department":"Research"},"role":"Senior Engineer"}]}"#,
+    )
+    .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": [
+            "users[].firstName",
+            "users[].lastName",
+            "users[].company.name",
+            "users[].company.department",
+            "users[].role"
+        ],
+        "pii": [
+            {
+                "path": "users[].lastName",
+                "action": "replace",
+                "template": "[firstName|trim|substring:0,3]"
+            },
+            {
+                "path": "users[].company.name",
+                "action": "replace",
+                "template": "[company.name|kebab]"
+            },
+            {
+                "path": "users[].company.department",
+                "action": "replace",
+                "template": "[company.name|camel]"
+            },
+            {
+                "path": "users[].role",
+                "action": "replace",
+                "template": "[firstName|trim|upper]"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(filtered["users"][0]["lastName"].as_str(), Some("Ada"));
+    assert_eq!(
+        filtered["users"][0]["company"]["name"].as_str(),
+        Some("analytical-engines")
+    );
+    assert_eq!(
+        filtered["users"][0]["company"]["department"].as_str(),
+        Some("analyticalEngines")
+    );
+    assert_eq!(filtered["users"][0]["role"].as_str(), Some("ADA"));
+}
+
+#[test]
 fn applies_pii_rules_with_content_path_relative_rules() {
     let value = parse_json_payload(
         r#"{"limit":1,"users":[{"email":"ada@example.com","firstName":"Ada","lastName":"Lovelace","phone":"+1-555-1234"}]}"#,

@@ -280,9 +280,14 @@ fn split_field_list(value: &str) -> Vec<String> {
 fn print_config_pii_usage() {
     eprintln!("usage: dtk config pii <add|remove> <config> <path> [options]");
     eprintln!("  dtk config pii add <config> <path> mask [--replacement TEXT]");
-    eprintln!("  dtk config pii add <config> <path> uuid [--method default|random|template] [--template TEXT]");
+    eprintln!(
+        "  dtk config pii add <config> <path> uuid [--method default|random|template] [--template TEXT]"
+    );
     eprintln!(
         "  dtk config pii add <config> <path> replace [--source-fields a,b] [--template TEXT]"
+    );
+    eprintln!(
+        "  templates support {{field}}, [field], and filters like lower, upper, trim, substring, kebab, and camel"
     );
     eprintln!("  dtk config pii remove <config> <path>");
 }

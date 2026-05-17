@@ -108,7 +108,7 @@ If you decide the field should be exposed by default next time, update the confi
 dtk config list
 dtk config allow add dummyjson_users.json '[].hair.color'
 dtk config allow remove dummyjson_users.json '[].hair.color'
-dtk config pii add dummyjson_users.json '[].email' replace --source-fields firstName,lastName --template '{firstName}.{lastName}@example.com'
+dtk config pii add dummyjson_users.json '[].email' replace --template '[firstName|lower].[lastName|lower]@example.com'
 dtk config pii remove dummyjson_users.json '[].email'
 dtk config delete dummyjson_users.json
 ```
@@ -193,7 +193,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
 That makes the config more accurate than hardcoding one guess up front.
 
 PII handling is optional and config-driven. When present, DTK applies it after allowlisting and also when `dtk retrieve` projects fields back out of the stored payload. The default mask token is `[PII INFORMATION]`, but each rule can override it.
-`uuid` is useful for deterministic synthetic identifiers, while `replace` is useful when a field should be reconstructed from sibling values, such as `email` from `firstName` and `lastName`.
+`uuid` is useful for deterministic synthetic identifiers, while `replace` is useful when a field should be reconstructed from sibling values, such as `email` from `firstName` and `lastName`. Replacement templates support `{field}` and `[field]` placeholders, plus filters like `lower`, `upper`, `trim`, `substring`, `kebab`, and `camel`.
 
 ## RTK vs DTK
 
