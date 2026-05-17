@@ -18,6 +18,26 @@ pub(crate) fn parse_structured_payload(text: &str) -> Option<Value> {
     parse_structured_payload_with_hint(text, None)
 }
 
+pub(crate) fn detect_structured_format(text: &str) -> Option<StructuredFormat> {
+    if json::parse(text).is_some() {
+        Some(StructuredFormat::Json)
+    } else if yaml::parse(text).is_some() {
+        Some(StructuredFormat::Yaml)
+    } else if toml::parse(text).is_some() {
+        Some(StructuredFormat::Toml)
+    } else if xaml::parse(text).is_some() {
+        Some(StructuredFormat::Xaml)
+    } else if csv::parse(text).is_some() {
+        Some(StructuredFormat::Csv)
+    } else if ini::parse(text).is_some() {
+        Some(StructuredFormat::Ini)
+    } else if hcl::parse(text).is_some() {
+        Some(StructuredFormat::Hcl)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn parse_structured_payload_with_hint(
     text: &str,
     format: Option<StructuredFormat>,

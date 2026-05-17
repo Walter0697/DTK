@@ -1,7 +1,7 @@
 use super::metadata::apply_filter_metadata;
 use super::patterns::{normalize_path_pattern_for_config, PathPattern, PathSegment};
 use super::pii::apply_pii_transform;
-use crate::FilterConfig;
+use crate::{FilterConfig, StructuredFormat};
 use serde_json::Value;
 
 pub fn field_is_allowlisted(config: &FilterConfig, field_path: &str) -> bool {
@@ -35,7 +35,7 @@ pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value
 
 pub fn filter_json_payload_with_metadata(value: &Value, config: &FilterConfig) -> Option<Value> {
     let filtered = apply_pii_transform(&filter_json_payload(value, config)?, config);
-    Some(apply_filter_metadata(value, &filtered, None, Some(config)))
+    Some(apply_filter_metadata(value, &filtered, None, Some(config), None))
 }
 
 pub fn filter_json_payload_with_ref(
@@ -43,12 +43,22 @@ pub fn filter_json_payload_with_ref(
     config: &FilterConfig,
     ref_id: &str,
 ) -> Option<Value> {
+    filter_json_payload_with_ref_and_format(value, config, ref_id, None)
+}
+
+pub fn filter_json_payload_with_ref_and_format(
+    value: &Value,
+    config: &FilterConfig,
+    ref_id: &str,
+    format: Option<StructuredFormat>,
+) -> Option<Value> {
     let filtered = apply_pii_transform(&filter_json_payload(value, config)?, config);
     Some(apply_filter_metadata(
         value,
         &filtered,
         Some(ref_id),
         Some(config),
+        format,
     ))
 }
 

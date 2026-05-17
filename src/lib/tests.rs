@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use super::{
     apply_pii_transform, cleanup_expired_payloads, collect_field_paths, default_store_dir,
     end_session, field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
+    filter_json_payload_with_ref_and_format,
     is_json_payload, is_structured_payload, load_config_recommendations, load_filter_config,
     normalize_field_path_for_config, parse_json_payload, parse_structured_format,
     parse_structured_payload, parse_structured_payload_with_hint, platform_data_dir,
@@ -623,6 +624,39 @@ fn adds_metadata_to_object_payload() {
             }
         })
     );
+}
+
+#[test]
+fn includes_native_format_metadata_for_non_json_outputs() {
+    let value =
+        parse_json_payload(r#"{"title":"hello","secret":"x"}"#).expect("expected structured json");
+
+    let config = FilterConfig {
+        id: None,
+        name: None,
+        source: None,
+        request: None,
+        notes: None,
+        format: None,
+        content_path: None,
+        allow: vec!["title".to_string()],
+        pii: vec![],
+    };
+
+    let filtered = filter_json_payload_with_ref_and_format(
+        &value,
+        &config,
+        "dtk_test",
+        Some(StructuredFormat::Yaml),
+    )
+    .expect("expected filtered json");
+
+    assert_eq!(filtered["_dtk"]["format"], "yaml");
+
+    let filtered_json =
+        filter_json_payload_with_ref_and_format(&value, &config, "dtk_test", Some(StructuredFormat::Json))
+            .expect("expected filtered json");
+    assert!(filtered_json["_dtk"].get("format").is_none());
 }
 
 #[test]
