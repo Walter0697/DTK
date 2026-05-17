@@ -2,14 +2,16 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dtk::{
-    recommendation_notices_for_retrieve, record_field_access, retrieve_original_payload,
-    runtime_store_dir, FieldAccessRecordInput,
+    apply_pii_transform, load_filter_config_for_ref, parse_structured_payload,
+    recommendation_notices_for_retrieve, record_field_access, recover_original_payload,
+    retrieve_json_payload, runtime_store_dir, FieldAccessRecordInput,
 };
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut array_index: Option<usize> = None;
     let mut all = false;
+    let mut no_pii_filter = false;
     let mut ref_id: Option<String> = None;
     let mut fields_arg: Option<String> = None;
 
@@ -28,6 +30,9 @@ fn main() -> ExitCode {
             }
             "--all" => {
                 all = true;
+            }
+            "--no-pii-filter" => {
+                no_pii_filter = true;
             }
             "--fields" => {
                 let Some(value) = args.next() else {
@@ -88,10 +93,38 @@ fn main() -> ExitCode {
     }
 
     let store_dir = runtime_store_dir();
-    let payload = match retrieve_original_payload(&ref_id, &store_dir, &fields, array_index, all) {
-        Ok(value) => value,
+    let payload = match recover_original_payload(&ref_id, &store_dir) {
+        Ok(text) => text,
         Err(err) => {
-            eprintln!("failed to retrieve payload for {ref_id}: {err}");
+            eprintln!("failed to recover payload for {ref_id}: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let payload = match parse_structured_payload(&payload) {
+        Some(value) => value,
+        None => {
+            eprintln!(
+                "stored payload is not structured JSON, YAML, TOML, CSV, INI, HCL, or XML/XAML"
+            );
+            return ExitCode::from(1);
+        }
+    };
+    let payload = if no_pii_filter {
+        payload
+    } else {
+        match load_filter_config_for_ref(&ref_id, &store_dir) {
+            Ok(Some(config)) => apply_pii_transform(&payload, &config),
+            Ok(None) => payload,
+            Err(err) => {
+                eprintln!("failed to load PII config for {ref_id}: {err}");
+                payload
+            }
+        }
+    };
+    let payload = match retrieve_json_payload(&payload, &fields, array_index, all) {
+        Some(value) => value,
+        None => {
+            eprintln!("failed to retrieve payload for {ref_id}: no matching values found for the requested fields");
             return ExitCode::from(1);
         }
     };
@@ -137,9 +170,10 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "usage: dtk_retrieve_json [--index N | --all] [--fields PATHS] <ref_id> [field1,field2,...]"
+        "usage: dtk_retrieve_json [--index N | --all] [--fields PATHS] [--no-pii-filter] <ref_id> [field1,field2,...]"
     );
     eprintln!(
         "  field paths use comma-separated allow-style paths like users[].address,users[0].firstName"
     );
+    eprintln!("  --no-pii-filter returns the retrieved payload without applying PII rules");
 }

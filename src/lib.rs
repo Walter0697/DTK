@@ -71,13 +71,14 @@ static STORE_REF_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SESSION_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub use config::{
-    add_or_update_hook_rule, load_filter_config, load_hook_rules, remove_hook_rules_for_config,
-    resolve_config_path, resolve_filter_config_id, write_filter_config, write_hook_rules,
+    add_or_update_hook_rule, load_filter_config, load_filter_config_for_ref, load_hook_rules,
+    remove_hook_rules_for_config, resolve_config_path, resolve_filter_config_id,
+    resolve_filter_config_identifier, write_filter_config, write_hook_rules,
 };
 use filter::normalize_repeated_field_path;
 pub use filter::{
-    collect_field_paths, field_is_allowlisted, filter_json_payload,
-    filter_json_payload_with_metadata, filter_json_payload_with_ref,
+    apply_pii_transform, collect_field_paths, field_is_allowlisted, field_is_pii_covered,
+    filter_json_payload, filter_json_payload_with_metadata, filter_json_payload_with_ref,
     normalize_field_path_for_config, retrieve_json_payload,
 };
 #[cfg(test)]
@@ -119,6 +120,38 @@ pub struct FilterConfig {
     pub content_path: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pii: Vec<PiiRule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiAction {
+    Mask,
+    Uuid,
+    Replace,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiUuidMethod {
+    Default,
+    Random,
+    Template,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PiiRule {
+    pub path: String,
+    pub action: PiiAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<PiiUuidMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +267,7 @@ pub struct RecommendationThresholds {
     pub tighten_fallback_count: i64,
     pub remove_fallback_count: i64,
     pub tighten_allow_count_min: usize,
+    pub pii_suggest_field_access_count: i64,
 }
 
 impl Default for RecommendationThresholds {
@@ -243,6 +277,7 @@ impl Default for RecommendationThresholds {
             tighten_fallback_count: 3,
             remove_fallback_count: 6,
             tighten_allow_count_min: 6,
+            pii_suggest_field_access_count: 3,
         }
     }
 }

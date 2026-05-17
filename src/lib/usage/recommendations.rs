@@ -1,8 +1,9 @@
 use super::context::{load_field_access_context, resolved_usage_dir};
 use super::schema::init_usage_schema;
 use crate::{
-    field_is_allowlisted, load_filter_config, normalize_field_path_for_config,
-    normalize_repeated_field_path, usage_db_path, ConfigRecommendation, RecommendationThresholds,
+    field_is_allowlisted, field_is_pii_covered, load_filter_config,
+    normalize_field_path_for_config, normalize_repeated_field_path, usage_db_path,
+    ConfigRecommendation, RecommendationThresholds,
 };
 use rusqlite::{params, Connection};
 use std::fs;
@@ -22,6 +23,7 @@ pub fn load_config_recommendations(
     let mut recommendations = Vec::new();
     recommendations.extend(load_expand_recommendations(&connection, thresholds)?);
     recommendations.extend(load_fallback_recommendations(&connection, thresholds)?);
+    recommendations.extend(load_pii_recommendations(&connection, thresholds)?);
     recommendations.sort_by(|left, right| {
         right
             .event_count
@@ -60,22 +62,39 @@ pub fn recommendation_notices_for_retrieve(
         load_config_recommendations(store_dir, RecommendationThresholds::default())?;
     let mut notices = Vec::new();
     for recommendation in recommendations {
-        if recommendation.recommendation_kind != "expand_allowlist" {
-            continue;
+        match recommendation.recommendation_kind.as_str() {
+            "expand_allowlist" => {
+                if recommendation.config_id != context.config_id {
+                    continue;
+                }
+                let Some(field_path) = recommendation.field_path.as_deref() else {
+                    continue;
+                };
+                if !requested.iter().any(|field| field == field_path) {
+                    continue;
+                }
+                notices.push(format!(
+                    "DTK recommendation: ask the user whether to add `{field_path}` to config `{}`. If they agree, run `dtk config list` to confirm the target config id, then `dtk config allow add <config> <field>`. This field has been requested repeatedly for the same endpoint.",
+                    recommendation.config_id
+                ));
+            }
+            "suggest_pii" => {
+                if recommendation.config_id != context.config_id {
+                    continue;
+                }
+                let Some(field_path) = recommendation.field_path.as_deref() else {
+                    continue;
+                };
+                if !requested.iter().any(|field| field == field_path) {
+                    continue;
+                }
+                notices.push(format!(
+                    "DTK recommendation: ask the user whether to add PII handling for `{field_path}` in config `{}` before exposing it. If they agree, run `dtk config list` to confirm the target config id, then `dtk config pii add <config> <field> mask|uuid|replace [options]`. DTK keeps seeing this field and it looks sensitive.",
+                    recommendation.config_id
+                ));
+            }
+            _ => {}
         }
-        if recommendation.config_id != context.config_id {
-            continue;
-        }
-        let Some(field_path) = recommendation.field_path.as_deref() else {
-            continue;
-        };
-        if !requested.iter().any(|field| field == field_path) {
-            continue;
-        }
-        notices.push(format!(
-            "DTK recommendation: ask the user whether to add `{field_path}` to config `{}`. If they agree, run `dtk config list` to confirm the target config id, then `dtk config allow add <config> <field>`. This field has been requested repeatedly for the same endpoint.",
-            recommendation.config_id
-        ));
     }
 
     notices.sort();
@@ -277,4 +296,115 @@ fn load_fallback_recommendations(
     }
 
     Ok(recommendations)
+}
+
+fn load_pii_recommendations(
+    connection: &Connection,
+    thresholds: RecommendationThresholds,
+) -> io::Result<Vec<ConfigRecommendation>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT fa.config_id, fa.config_path, cs.command, cs.domain, cs.details, fa.field_path, COUNT(*) as access_count
+             FROM field_access_events fa
+             LEFT JOIN command_signatures cs ON cs.id = fa.signature_id
+             WHERE fa.config_id != ''
+             GROUP BY fa.config_id, fa.config_path, fa.signature_id, fa.field_path
+             HAVING COUNT(*) >= ?1
+             ORDER BY access_count DESC",
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("prepare pii recommendations: {err}"),
+            )
+        })?;
+
+    let rows = statement
+        .query_map(params![thresholds.pii_suggest_field_access_count], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("query pii recommendations: {err}"),
+            )
+        })?;
+
+    let mut recommendations = Vec::new();
+    for row in rows {
+        let (config_id, config_path, command, domain, details, field_path, access_count) = row
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("read pii recommendation: {err}"),
+                )
+            })?;
+        let Some(config) = load_filter_config(&config_path).ok() else {
+            continue;
+        };
+        let Some(display_field_path) = normalize_field_path_for_config(&field_path, &config) else {
+            continue;
+        };
+        if !looks_like_pii_field(&display_field_path) {
+            continue;
+        }
+        if field_is_pii_covered(&config, &display_field_path) {
+            continue;
+        }
+
+        recommendations.push(ConfigRecommendation {
+            config_id: config_id.clone(),
+            config_path: config_path.clone(),
+            command,
+            domain,
+            details,
+            recommendation_kind: "suggest_pii".to_string(),
+            field_path: Some(display_field_path.clone()),
+            event_count: access_count,
+            summary: format!(
+                "Field `{display_field_path}` was retrieved {access_count} times for config `{config_id}` and looks like sensitive data. Ask the user whether to add a PII rule."
+            ),
+        });
+    }
+
+    Ok(recommendations)
+}
+
+fn looks_like_pii_field(field_path: &str) -> bool {
+    let normalized = field_path.to_ascii_lowercase();
+    let candidates = [
+        "email",
+        "phone",
+        "ssn",
+        "password",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "privatekey",
+        "accesskey",
+        "birthdate",
+        "dob",
+        "macaddress",
+        "ipaddress",
+        "ipv4",
+        "ipv6",
+        "ein",
+        "govid",
+        "taxid",
+        "creditcard",
+        "cardnumber",
+    ];
+
+    candidates
+        .iter()
+        .any(|candidate| normalized.contains(candidate))
 }

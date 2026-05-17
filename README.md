@@ -108,6 +108,8 @@ If you decide the field should be exposed by default next time, update the confi
 dtk config list
 dtk config allow add dummyjson_users.json '[].hair.color'
 dtk config allow remove dummyjson_users.json '[].hair.color'
+dtk config pii add dummyjson_users.json '[].email' replace --template '[firstName|lower].[lastName|lower]@example.com'
+dtk config pii remove dummyjson_users.json '[].email'
 dtk config delete dummyjson_users.json
 ```
 
@@ -148,9 +150,11 @@ They help by:
 - inspecting the live payload
 - asking which fields should stay visible
 - asking which fields should be hidden
+- asking whether any visible sensitive fields should be protected with optional PII rules
 - drafting the matching DTK config
 - registering the hook rule for later reuse
 - tuning an existing config by expanding or shrinking its allowlist with `dtk config allow add` and `dtk config allow remove`
+- tuning PII rules with `dtk config pii add` and `dtk config pii remove`
 
 How to use it:
 
@@ -167,6 +171,7 @@ The setup flow is interactive. The agent can keep refining the config by asking 
 - which fields matter for decisions
 - which nested fields should stay visible
 - which fields should be hidden
+- whether sensitive fields should be masked or replaced with deterministic synthetic values
 - whether the payload root is an object or an array
 
 After a config already exists, DTK-native config commands can handle follow-up prompts like:
@@ -186,6 +191,10 @@ Please inspect the response, identify the fields that are likely needed, ask me 
 ```
 
 That makes the config more accurate than hardcoding one guess up front.
+
+PII handling is optional and config-driven. When present, DTK applies it after allowlisting and also when `dtk retrieve` projects fields back out of the stored payload. The default mask token is `[PII INFORMATION]`, but each rule can override it.
+`uuid` is useful for deterministic synthetic identifiers, while `replace` is useful when a field should be reconstructed from sibling values, such as `email` from `firstName` and `lastName`. Replacement templates support `{field}` and `[field]` placeholders, default fallbacks, plus filters like `lower`, `upper`, `trim`, `substring`, `kebab`, and `camel`.
+If you need the raw stored value during retrieval, `dtk retrieve` supports `--no-pii-filter`, but use it sparingly and only when the user explicitly wants the original values.
 
 ## RTK vs DTK
 

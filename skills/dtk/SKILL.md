@@ -40,6 +40,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
    - Stable filters or scoping flags that do not change the payload shape, such as `kubectl get configmap --namespace ...`, can usually share the same config.
 5. Ask the user which fields are required, optional, or sensitive.
    - If the schema boundary is unclear, ask whether you should run another endpoint or command once more to confirm the shape.
+   - If obvious PII fields appear, ask whether a PII config should be applied for masking, deterministic UUID replacement, or template-based field replacement.
 6. Propose an allowlist with minimal safe defaults.
 7. Generate or update config JSON with:
    - `name`
@@ -48,6 +49,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
    - `notes`
    - `content_path`
    - `allow`
+   - optional `pii` rules when the user wants masking or synthetic replacement
    - store it under the global DTK config directory
    - append or update a matching rule in `~/.config/dtk/hooks.json` via `dtk hook add`
 8. Run `dtk exec --config ... -- <command>` and compare:
@@ -62,6 +64,8 @@ When updating an existing installed config after creation, prefer DTK-native con
 
 - `dtk config allow add <config> <field>`
 - `dtk config allow remove <config> <field>`
+- `dtk config pii add <config> <path> <mask|uuid|replace> [options]`
+- `dtk config pii remove <config> <path>`
 - `dtk config delete <config>`
 
 ## Rule Design Notes
@@ -73,6 +77,11 @@ When updating an existing installed config after creation, prefer DTK-native con
 - Use `_dtk.content_path` to identify the main payload branch before writing allow rules.
 - Mirror `_dtk.content_path` into the config as `content_path` when the payload has an envelope around the real data.
 - If `available_fields` shows nested content, prefer explicit nested allow paths such as `users[].hair.color`.
+- If the payload exposes likely sensitive fields, ask whether the user wants a `pii` section added before finalizing the config.
+- PII rules apply after allowlisting and also affect `dtk retrieve`, so retrieved fields stay sanitized the same way as the emitted payload.
+- Use `mask` with a default replacement of `[PII INFORMATION]` unless the user wants a different token.
+- Use `uuid` when the user wants deterministic synthetic identifiers or templated replacements.
+- Use `replace` when the user wants to rebuild a field from sibling fields, such as `email` from `firstName` and `lastName`.
 - Use the command prefix to match the stable command family, and use contains checks only when a specific flag must be required.
 - Use `dtk retrieve` when you need to project specific fields back out of a stored payload.
 - Use nested indexes like `users[0].firstName` when you need a single array element from a nested array.
@@ -85,11 +94,13 @@ When updating an existing installed config after creation, prefer DTK-native con
 - Filtered output remains valid JSON.
 - Required decision fields are present.
 - The user confirmed which fields are actually needed.
+- The user confirmed whether any sensitive fields need `pii` handling.
 - The command family is mapped to the correct schema boundary.
 - `_dtk.available_fields` reflects the important visible branches.
 - `_dtk.content_path` points at the content subtree the agent should inspect.
 - The config `content_path` matches the real payload branch when one exists.
 - `dtk retrieve` can recover selected fields from stored original payloads.
+- `dtk retrieve` still honors `pii` rules when projecting values back out.
 - Nested array indexes are supported in retrieval paths.
 - The retrieve flow starts from `_dtk.ref_id`.
 - `_dtk.ref_id` exists for recovery.

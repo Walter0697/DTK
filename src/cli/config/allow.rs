@@ -107,6 +107,7 @@ mod tests {
             format: None,
             content_path: None,
             allow: vec!["users[].id".to_string()],
+            pii: vec![],
         };
 
         assert!(add_allow_path(&mut config, "users[].email"));
@@ -128,6 +129,7 @@ mod tests {
             format: None,
             content_path: None,
             allow: vec!["users[].id".to_string(), "users[].email".to_string()],
+            pii: vec![],
         };
 
         assert!(remove_allow_path(&mut config, "users[].email"));

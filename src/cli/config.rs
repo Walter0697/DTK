@@ -2,6 +2,7 @@ mod allow;
 mod delete;
 mod hook;
 mod list;
+mod pii;
 mod resolve;
 
 pub use hook::run_hook_command;
@@ -17,6 +18,7 @@ pub fn run_config_command(args: Vec<String>) -> ExitCode {
 
     match subcommand.as_str() {
         "allow" => allow::run_config_allow_command(args.collect()),
+        "pii" => pii::run_config_pii_command(args.collect()),
         "list" | "ls" => list::run_config_list_command(args.collect()),
         "delete" | "remove" | "wipe" => delete::run_config_delete_command(args.collect()),
         "help" | "--help" | "-h" => {
@@ -32,9 +34,11 @@ pub fn run_config_command(args: Vec<String>) -> ExitCode {
 }
 
 fn print_config_usage() {
-    eprintln!("usage: dtk config <allow|delete|list> ...");
+    eprintln!("usage: dtk config <allow|delete|list|pii> ...");
     eprintln!("  dtk config allow add <config> <field>");
     eprintln!("  dtk config allow remove <config> <field>");
+    eprintln!("  dtk config pii add <config> <path> <mask|uuid|replace> [options]");
+    eprintln!("  dtk config pii remove <config> <path>");
     eprintln!("  dtk config list");
     eprintln!("  dtk config delete <config>");
 }

@@ -1,5 +1,6 @@
 use super::metadata::apply_filter_metadata;
 use super::patterns::{normalize_path_pattern_for_config, PathPattern, PathSegment};
+use super::pii::apply_pii_transform;
 use crate::FilterConfig;
 use serde_json::Value;
 
@@ -33,7 +34,7 @@ pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value
 }
 
 pub fn filter_json_payload_with_metadata(value: &Value, config: &FilterConfig) -> Option<Value> {
-    let filtered = filter_json_payload(value, config)?;
+    let filtered = apply_pii_transform(&filter_json_payload(value, config)?, config);
     Some(apply_filter_metadata(value, &filtered, None, Some(config)))
 }
 
@@ -42,7 +43,7 @@ pub fn filter_json_payload_with_ref(
     config: &FilterConfig,
     ref_id: &str,
 ) -> Option<Value> {
-    let filtered = filter_json_payload(value, config)?;
+    let filtered = apply_pii_transform(&filter_json_payload(value, config)?, config);
     Some(apply_filter_metadata(
         value,
         &filtered,
