@@ -3,16 +3,16 @@ use std::path::PathBuf;
 use super::{
     apply_pii_transform, cleanup_expired_payloads, collect_field_paths, default_store_dir,
     end_session, field_is_allowlisted, filter_json_payload, filter_json_payload_with_metadata,
-    filter_json_payload_with_ref_and_format,
-    is_json_payload, is_structured_payload, load_config_recommendations, load_filter_config,
-    normalize_field_path_for_config, parse_json_payload, parse_structured_format,
-    parse_structured_payload, parse_structured_payload_with_hint, platform_data_dir,
-    preview_expired_payloads, recommendation_notices_for_exec, recommendation_notices_for_retrieve,
-    record_exec_metrics, record_field_access, recover_original_payload, resolve_filter_config_id,
-    retrieve_json_payload, retrieve_original_payload, runtime_store_dir, stable_ref_id,
-    start_session, store_original_payload, store_original_payload_with_retention,
-    summarize_command_signature, usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput,
-    FieldAccessRecordInput, FilterConfig, RecommendationThresholds, StructuredFormat,
+    filter_json_payload_with_ref_and_format, is_json_payload, is_structured_payload,
+    load_config_recommendations, load_filter_config, normalize_field_path_for_config,
+    parse_json_payload, parse_structured_format, parse_structured_payload,
+    parse_structured_payload_with_hint, platform_data_dir, preview_expired_payloads,
+    recommendation_notices_for_exec, recommendation_notices_for_retrieve, record_exec_metrics,
+    record_field_access, recover_original_payload, resolve_filter_config_id, retrieve_json_payload,
+    retrieve_original_payload, runtime_store_dir, stable_ref_id, start_session,
+    store_original_payload, store_original_payload_with_retention, summarize_command_signature,
+    usage_db_path, windows_data_dir, xdg_data_dir, ExecMetricsInput, FieldAccessRecordInput,
+    FilterConfig, RecommendationThresholds, StructuredFormat,
 };
 
 fn temp_store_dir(name: &str) -> PathBuf {
@@ -653,9 +653,13 @@ fn includes_native_format_metadata_for_non_json_outputs() {
 
     assert_eq!(filtered["_dtk"]["format"], "yaml");
 
-    let filtered_json =
-        filter_json_payload_with_ref_and_format(&value, &config, "dtk_test", Some(StructuredFormat::Json))
-            .expect("expected filtered json");
+    let filtered_json = filter_json_payload_with_ref_and_format(
+        &value,
+        &config,
+        "dtk_test",
+        Some(StructuredFormat::Json),
+    )
+    .expect("expected filtered json");
     assert!(filtered_json["_dtk"].get("format").is_none());
 }
 

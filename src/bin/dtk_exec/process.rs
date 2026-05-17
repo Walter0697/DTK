@@ -80,12 +80,9 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
             }
         };
 
-        let Some(filtered) = filter_json_payload_with_ref_and_format(
-            &value,
-            &config,
-            &ref_id,
-            detected_format,
-        ) else {
+        let Some(filtered) =
+            filter_json_payload_with_ref_and_format(&value, &config, &ref_id, detected_format)
+        else {
             eprintln!("filtered payload is empty");
             return ExitCode::from(1);
         };

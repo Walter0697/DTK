@@ -35,7 +35,13 @@ pub fn filter_json_payload(value: &Value, config: &FilterConfig) -> Option<Value
 
 pub fn filter_json_payload_with_metadata(value: &Value, config: &FilterConfig) -> Option<Value> {
     let filtered = apply_pii_transform(&filter_json_payload(value, config)?, config);
-    Some(apply_filter_metadata(value, &filtered, None, Some(config), None))
+    Some(apply_filter_metadata(
+        value,
+        &filtered,
+        None,
+        Some(config),
+        None,
+    ))
 }
 
 pub fn filter_json_payload_with_ref(
