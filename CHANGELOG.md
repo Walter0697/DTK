@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Walter0697/DTK/compare/v0.0.4...v0.0.5) - 2026-05-17
+
+### Other
+
+- Apply rustfmt
+- Add runtime source format hints
+
 ## [0.0.4](https://github.com/Walter0697/DTK/compare/v0.0.3...v0.0.4) - 2026-05-17
 
 ### Other
