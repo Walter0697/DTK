@@ -15,5 +15,5 @@ pub use filtering::{
 };
 pub use patterns::normalize_field_path_for_config;
 pub(crate) use patterns::normalize_repeated_field_path;
-pub use pii::apply_pii_transform;
+pub use pii::{apply_pii_transform, field_is_pii_covered};
 pub use retrieval::{collect_field_paths, retrieve_json_payload};

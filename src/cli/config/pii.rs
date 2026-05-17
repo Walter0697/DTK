@@ -287,7 +287,7 @@ fn print_config_pii_usage() {
         "  dtk config pii add <config> <path> replace [--source-fields a,b] [--template TEXT]"
     );
     eprintln!(
-        "  templates support {{field}}, [field], and filters like lower, upper, trim, substring, kebab, and camel"
+        "  templates support {{field}}, [field], default fallbacks, and filters like lower, upper, trim, substring, kebab, and camel"
     );
     eprintln!("  dtk config pii remove <config> <path>");
 }

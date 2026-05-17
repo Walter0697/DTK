@@ -77,8 +77,8 @@ pub use config::{
 };
 use filter::normalize_repeated_field_path;
 pub use filter::{
-    apply_pii_transform, collect_field_paths, field_is_allowlisted, filter_json_payload,
-    filter_json_payload_with_metadata, filter_json_payload_with_ref,
+    apply_pii_transform, collect_field_paths, field_is_allowlisted, field_is_pii_covered,
+    filter_json_payload, filter_json_payload_with_metadata, filter_json_payload_with_ref,
     normalize_field_path_for_config, retrieve_json_payload,
 };
 #[cfg(test)]
@@ -267,6 +267,7 @@ pub struct RecommendationThresholds {
     pub tighten_fallback_count: i64,
     pub remove_fallback_count: i64,
     pub tighten_allow_count_min: usize,
+    pub pii_suggest_field_access_count: i64,
 }
 
 impl Default for RecommendationThresholds {
@@ -276,6 +277,7 @@ impl Default for RecommendationThresholds {
             tighten_fallback_count: 3,
             remove_fallback_count: 6,
             tighten_allow_count_min: 6,
+            pii_suggest_field_access_count: 3,
         }
     }
 }

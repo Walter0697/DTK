@@ -1210,6 +1210,7 @@ fn records_field_access_and_generates_expand_recommendation() {
             tighten_fallback_count: 3,
             remove_fallback_count: 6,
             tighten_allow_count_min: 6,
+            pii_suggest_field_access_count: 3,
         },
     )
     .expect("recommendations");
@@ -1228,6 +1229,86 @@ fn records_field_access_and_generates_expand_recommendation() {
     assert!(notices
         .iter()
         .any(|notice| notice.contains("add `users[].email` to config `users_cfg`")));
+    let _ = std::fs::remove_dir_all(store_dir);
+}
+
+#[test]
+fn recommends_pii_handling_for_repeated_sensitive_field_access() {
+    let store_dir = temp_store_dir("unit-test-pii-recommendation");
+    let _ = std::fs::remove_dir_all(&store_dir);
+    std::fs::create_dir_all(&store_dir).expect("create store dir");
+    let config_path = store_dir.join("users-config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "id": "users_cfg",
+            "name": "users_cfg",
+            "allow": ["users[].email", "users[].firstName", "users[].lastName"]
+        }))
+        .expect("config json"),
+    )
+    .expect("write config");
+    let created_at_unix_ms = now_unix_ms();
+
+    let metrics = ExecMetricsInput {
+        ref_id: "dtk_pii_1".to_string(),
+        created_at_unix_ms,
+        signature: summarize_command_signature(&[
+            "curl".to_string(),
+            "-sS".to_string(),
+            "https://dummyjson.com/users".to_string(),
+        ])
+        .expect("expected signature"),
+        config_id: "users_cfg".to_string(),
+        config_path: config_path.to_string_lossy().to_string(),
+        original_tokens: 200,
+        filtered_tokens: 50,
+    };
+    record_exec_metrics(&store_dir, &metrics).expect("metrics");
+
+    for created_at_unix_ms in [
+        created_at_unix_ms + 1,
+        created_at_unix_ms + 2,
+        created_at_unix_ms + 3,
+    ] {
+        let access = FieldAccessRecordInput {
+            ref_id: "dtk_pii_1".to_string(),
+            created_at_unix_ms,
+            fields: vec!["users[].email".to_string()],
+            array_index: None,
+            all: false,
+            access_kind: "retrieve".to_string(),
+        };
+        record_field_access(&store_dir, &access).expect("field access");
+    }
+
+    let recommendations = load_config_recommendations(
+        &store_dir,
+        RecommendationThresholds {
+            expand_field_access_count: 3,
+            tighten_fallback_count: 3,
+            remove_fallback_count: 6,
+            tighten_allow_count_min: 6,
+            pii_suggest_field_access_count: 3,
+        },
+    )
+    .expect("recommendations");
+
+    assert!(recommendations.iter().any(|recommendation| {
+        recommendation.recommendation_kind == "suggest_pii"
+            && recommendation.config_id == "users_cfg"
+            && recommendation.field_path.as_deref() == Some("users[].email")
+    }));
+
+    let notices = recommendation_notices_for_retrieve(
+        &store_dir,
+        "dtk_pii_1",
+        &["users[].email".to_string()],
+    )
+    .expect("notices");
+    assert!(notices
+        .iter()
+        .any(|notice| notice.contains("add PII handling for `users[].email`")));
     let _ = std::fs::remove_dir_all(store_dir);
 }
 
@@ -1459,6 +1540,7 @@ fn generates_tighten_or_remove_recommendation_for_repeated_fallbacks() {
             tighten_fallback_count: 3,
             remove_fallback_count: 6,
             tighten_allow_count_min: 6,
+            pii_suggest_field_access_count: 3,
         },
     )
     .expect("recommendations");
@@ -1943,6 +2025,27 @@ fn replace_without_source_fields_can_still_use_the_raw_value() {
         filtered["users"][0]["phone"].as_str(),
         Some("PHONE-+1-555-1234")
     );
+}
+
+#[test]
+fn replace_templates_support_default_fallbacks() {
+    let value = parse_json_payload(r#"{"users":[{"email":"","firstName":"Ada"}]}"#)
+        .expect("expected structured json");
+    let config = serde_json::from_value::<FilterConfig>(serde_json::json!({
+        "allow": ["users[].email", "users[].firstName"],
+        "pii": [
+            {
+                "path": "users[].email",
+                "action": "replace",
+                "template": "[nickname|default:Unknown User|kebab]"
+            }
+        ]
+    }))
+    .expect("expected config to deserialize");
+
+    let filtered = filter_json_payload_with_metadata(&value, &config).expect("expected filtered");
+
+    assert_eq!(filtered["users"][0]["email"].as_str(), Some("unknown-user"));
 }
 
 #[test]

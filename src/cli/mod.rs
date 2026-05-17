@@ -131,7 +131,7 @@ fn print_usage() {
     eprintln!("  dtk install");
     eprintln!("  dtk install-dummy");
     eprintln!("  dtk exec [dtk_exec args...]");
-    eprintln!("  dtk retrieve [dtk_retrieve_json args...]");
+    eprintln!("  dtk retrieve [dtk_retrieve_json args...] (supports --no-pii-filter)");
     eprintln!("  dtk config list");
     eprintln!("  dtk config allow <add|remove> <config> <field>");
     eprintln!("  dtk config pii <add|remove> <config> <path> [options]");

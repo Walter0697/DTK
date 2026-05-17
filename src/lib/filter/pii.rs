@@ -43,6 +43,16 @@ pub fn apply_pii_transform(value: &Value, config: &FilterConfig) -> Value {
     transform_value(value, &[], None, &[], &rules, config)
 }
 
+pub fn field_is_pii_covered(config: &FilterConfig, field_path: &str) -> bool {
+    let normalized =
+        normalize_current_path_for_config(&PathPattern::parse(field_path).segments, config);
+
+    let rules = compile_rules(config);
+    rules
+        .iter()
+        .any(|rule| rule.pattern.covers_path(&normalized))
+}
+
 fn compile_rules(config: &FilterConfig) -> Vec<CompiledPiiRule> {
     config
         .pii
@@ -437,7 +447,7 @@ fn render_placeholder(
         .map(|(name, spec)| (name.trim(), Some(spec.trim())))
         .unwrap_or((base, None));
 
-    let resolved = match name {
+    let mut value = match name {
         "value" => Some(format_value_placeholder(&context.value, format_spec)),
         "path" => Some(context.path.clone()),
         "hash" => Some(context.hash.clone()),
@@ -462,18 +472,30 @@ fn render_placeholder(
             }),
     };
 
-    let Some(mut value) = resolved else {
-        return format!("{open}{placeholder}{close}");
-    };
-
     for filter in filters {
-        let Some(filtered) = apply_string_filter(&value, filter) else {
+        let (filter_name, filter_spec) = filter
+            .split_once(':')
+            .map(|(name, spec)| (name.trim(), Some(spec.trim())))
+            .unwrap_or((filter, None));
+
+        if filter_name.eq_ignore_ascii_case("default") {
+            let fallback = filter_spec.unwrap_or_default().to_string();
+            if value.as_ref().map(|value| value.is_empty()).unwrap_or(true) {
+                value = Some(fallback);
+            }
+            continue;
+        }
+
+        let Some(current) = value.as_deref() else {
+            continue;
+        };
+        let Some(filtered) = apply_string_filter(current, filter_name, filter_spec) else {
             return format!("{open}{placeholder}{close}");
         };
-        value = filtered;
+        value = Some(filtered);
     }
 
-    value
+    value.unwrap_or_else(|| format!("{open}{placeholder}{close}"))
 }
 
 fn format_value_placeholder(value: &str, format_spec: Option<&str>) -> String {
@@ -499,13 +521,8 @@ fn format_value_placeholder(value: &str, format_spec: Option<&str>) -> String {
     value.to_string()
 }
 
-fn apply_string_filter(value: &str, filter: &str) -> Option<String> {
-    let (name, spec) = filter
-        .split_once(':')
-        .map(|(name, spec)| (name.trim(), Some(spec.trim())))
-        .unwrap_or((filter.trim(), None));
-
-    match name.to_ascii_lowercase().as_str() {
+fn apply_string_filter(value: &str, filter_name: &str, spec: Option<&str>) -> Option<String> {
+    match filter_name.to_ascii_lowercase().as_str() {
         "lower" => Some(value.to_lowercase()),
         "upper" => Some(value.to_uppercase()),
         "trim" => Some(value.trim().to_string()),
