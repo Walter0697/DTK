@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Walter0697/DTK/compare/v0.0.3...v0.0.4) - 2026-05-17
+
+### Other
+
+- Expand PII templates and retrieve controls
+- Add PII template filters
+- Fix PII matching under content path
+- Add PII config commands
+- Expand PII replacement modes
+- Add PII filtering
+
 ## [0.0.3](https://github.com/Walter0697/DTK/compare/v0.0.2...v0.0.3) - 2026-05-16
 
 ### Added
