@@ -85,7 +85,7 @@ pub use filter::{
 #[cfg(test)]
 use install::normalize_codex_agents_content;
 pub use install::{
-    claude_dir, codex_dir, cursor_dir, install_agent_guidance,
+    claude_dir, codex_dir, cursor_dir, gemini_dir, install_agent_guidance,
     install_agent_guidance_with_dummy_samples, install_config_skill, uninstall_agent_guidance,
 };
 pub use paths::{
@@ -357,6 +357,14 @@ pub enum AgentTarget {
     Codex,
     Claude,
     Cursor,
+    Copilot,
+    Gemini,
+    Windsurf,
+    Cline,
+    KiloCode,
+    Antigravity,
+    OpenCode,
+    Hermes,
 }
 
 impl AgentTarget {
@@ -366,6 +374,14 @@ impl AgentTarget {
             "codex" => Some(Self::Codex),
             "claude" => Some(Self::Claude),
             "cursor" => Some(Self::Cursor),
+            "copilot" => Some(Self::Copilot),
+            "gemini" => Some(Self::Gemini),
+            "windsurf" => Some(Self::Windsurf),
+            "cline" => Some(Self::Cline),
+            "kilocode" => Some(Self::KiloCode),
+            "antigravity" => Some(Self::Antigravity),
+            "opencode" => Some(Self::OpenCode),
+            "hermes" => Some(Self::Hermes),
             _ => None,
         }
     }
@@ -376,6 +392,14 @@ impl AgentTarget {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Cursor => "cursor",
+            Self::Copilot => "copilot",
+            Self::Gemini => "gemini",
+            Self::Windsurf => "windsurf",
+            Self::Cline => "cline",
+            Self::KiloCode => "kilocode",
+            Self::Antigravity => "antigravity",
+            Self::OpenCode => "opencode",
+            Self::Hermes => "hermes",
         }
     }
 }

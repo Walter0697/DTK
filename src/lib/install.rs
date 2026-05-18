@@ -1,6 +1,9 @@
 mod samples;
 
-use crate::provider::{claude, codex, cursor};
+use crate::provider::{
+    antigravity, claude, cline, codex, copilot, cursor, gemini, hermes, kilocode, opencode,
+    windsurf,
+};
 use crate::{AgentInstallReport, AgentTarget};
 use serde_json::Value;
 use std::fs;
@@ -26,6 +29,14 @@ pub fn uninstall_agent_guidance(target: AgentTarget) -> io::Result<AgentInstallR
             changed |= codex::uninstall_codex_agents_attachment()?;
             changed |= claude::uninstall_claude_guidance()?;
             changed |= cursor::uninstall_cursor_guidance()?;
+            changed |= copilot::uninstall_copilot_guidance()?;
+            changed |= gemini::uninstall_gemini_guidance()?;
+            changed |= windsurf::uninstall_windsurf_guidance()?;
+            changed |= cline::uninstall_cline_guidance()?;
+            changed |= kilocode::uninstall_kilocode_guidance()?;
+            changed |= antigravity::uninstall_antigravity_guidance()?;
+            changed |= opencode::uninstall_opencode_guidance()?;
+            changed |= hermes::uninstall_hermes_guidance()?;
         }
         AgentTarget::Codex => {
             changed |= codex::uninstall_codex_guidance()?;
@@ -36,6 +47,30 @@ pub fn uninstall_agent_guidance(target: AgentTarget) -> io::Result<AgentInstallR
         }
         AgentTarget::Cursor => {
             changed |= cursor::uninstall_cursor_guidance()?;
+        }
+        AgentTarget::Copilot => {
+            changed |= copilot::uninstall_copilot_guidance()?;
+        }
+        AgentTarget::Gemini => {
+            changed |= gemini::uninstall_gemini_guidance()?;
+        }
+        AgentTarget::Windsurf => {
+            changed |= windsurf::uninstall_windsurf_guidance()?;
+        }
+        AgentTarget::Cline => {
+            changed |= cline::uninstall_cline_guidance()?;
+        }
+        AgentTarget::KiloCode => {
+            changed |= kilocode::uninstall_kilocode_guidance()?;
+        }
+        AgentTarget::Antigravity => {
+            changed |= antigravity::uninstall_antigravity_guidance()?;
+        }
+        AgentTarget::OpenCode => {
+            changed |= opencode::uninstall_opencode_guidance()?;
+        }
+        AgentTarget::Hermes => {
+            changed |= hermes::uninstall_hermes_guidance()?;
         }
     }
 
@@ -49,11 +84,20 @@ pub fn install_config_skill(target: AgentTarget) -> io::Result<bool> {
             changed |= codex::install_codex_skill()?;
             changed |= claude::install_claude_skill()?;
             changed |= cursor::install_cursor_skill()?;
+            changed |= gemini::install_gemini_skill()?;
             Ok(changed)
         }
         AgentTarget::Codex => codex::install_codex_skill(),
         AgentTarget::Claude => claude::install_claude_skill(),
         AgentTarget::Cursor => cursor::install_cursor_skill(),
+        AgentTarget::Copilot => Ok(false),
+        AgentTarget::Gemini => gemini::install_gemini_skill(),
+        AgentTarget::Windsurf
+        | AgentTarget::Cline
+        | AgentTarget::KiloCode
+        | AgentTarget::Antigravity
+        | AgentTarget::OpenCode
+        | AgentTarget::Hermes => Ok(false),
     }
 }
 
@@ -73,6 +117,12 @@ pub fn cursor_dir() -> PathBuf {
     std::env::var("DTK_CURSOR_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home_dir().join(".cursor"))
+}
+
+pub fn gemini_dir() -> PathBuf {
+    std::env::var("DTK_GEMINI_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".gemini"))
 }
 
 pub(crate) fn normalize_codex_agents_content(
@@ -121,6 +171,14 @@ fn install_agent_guidance_with_sample_set(
             changed |= codex::install_codex_agents_attachment()?;
             changed |= claude::install_claude_guidance()?;
             changed |= cursor::install_cursor_guidance()?;
+            changed |= copilot::install_copilot_guidance()?;
+            changed |= gemini::install_gemini_guidance()?;
+            changed |= windsurf::install_windsurf_guidance()?;
+            changed |= cline::install_cline_guidance()?;
+            changed |= kilocode::install_kilocode_guidance()?;
+            changed |= antigravity::install_antigravity_guidance()?;
+            changed |= opencode::install_opencode_guidance()?;
+            changed |= hermes::install_hermes_guidance()?;
         }
         AgentTarget::Codex => {
             changed |= codex::install_codex_guidance()?;
@@ -131,6 +189,30 @@ fn install_agent_guidance_with_sample_set(
         }
         AgentTarget::Cursor => {
             changed |= cursor::install_cursor_guidance()?;
+        }
+        AgentTarget::Copilot => {
+            changed |= copilot::install_copilot_guidance()?;
+        }
+        AgentTarget::Gemini => {
+            changed |= gemini::install_gemini_guidance()?;
+        }
+        AgentTarget::Windsurf => {
+            changed |= windsurf::install_windsurf_guidance()?;
+        }
+        AgentTarget::Cline => {
+            changed |= cline::install_cline_guidance()?;
+        }
+        AgentTarget::KiloCode => {
+            changed |= kilocode::install_kilocode_guidance()?;
+        }
+        AgentTarget::Antigravity => {
+            changed |= antigravity::install_antigravity_guidance()?;
+        }
+        AgentTarget::OpenCode => {
+            changed |= opencode::install_opencode_guidance()?;
+        }
+        AgentTarget::Hermes => {
+            changed |= hermes::install_hermes_guidance()?;
         }
     }
 

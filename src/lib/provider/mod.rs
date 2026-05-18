@@ -1,4 +1,12 @@
+pub(crate) mod antigravity;
 pub(crate) mod claude;
+pub(crate) mod cline;
 pub(crate) mod codex;
+pub(crate) mod copilot;
 pub(crate) mod cursor;
+pub(crate) mod gemini;
+pub(crate) mod hermes;
+pub(crate) mod kilocode;
+pub(crate) mod opencode;
 mod template;
+pub(crate) mod windsurf;
