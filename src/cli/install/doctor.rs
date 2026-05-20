@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use dtk::{claude_dir, codex_dir, cursor_dir, gemini_dir, AgentTarget};
+use dtk::{claude_dir, codex_dir, cursor_dir, default_config_dir, gemini_dir, AgentTarget};
 
 #[derive(Debug, Clone)]
 pub(super) struct DoctorCheck {
@@ -83,6 +83,7 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
             let skill = claude_dir().join("skills").join("dtk").join("SKILL.md");
             let claude_md = claude_dir().join("CLAUDE.md");
             let settings = claude_dir().join("settings.json");
+            let hooks = default_config_dir().join("hooks.json");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
@@ -94,11 +95,14 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
                 "dtk_hook_route --provider claude",
                 true,
             ));
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(&hooks, "dummyjson_users.json", true));
         }
         AgentTarget::Cursor => {
             let guide = cursor_dir().join("DTK.md");
             let skill = cursor_dir().join("skills").join("dtk").join("SKILL.md");
             let hooks = cursor_dir().join("hooks.json");
+            let hook_rules = default_config_dir().join("hooks.json");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
@@ -108,12 +112,19 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
                 "dtk_hook_route --provider cursor",
                 true,
             ));
+            checks.push(file_check(&hook_rules, true));
+            checks.push(text_contains_check(
+                &hook_rules,
+                "dummyjson_users.json",
+                true,
+            ));
         }
         AgentTarget::Copilot => {
             let hooks = std::path::PathBuf::from(".github")
                 .join("hooks")
                 .join("dtk-rewrite.json");
             let instructions = std::path::PathBuf::from(".github").join("copilot-instructions.md");
+            let hook_rules = default_config_dir().join("hooks.json");
             checks.push(file_check(&hooks, true));
             checks.push(text_contains_check(
                 &hooks,
@@ -122,12 +133,19 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
             ));
             checks.push(file_check(&instructions, true));
             checks.push(text_contains_check(&instructions, "dtk exec", true));
+            checks.push(file_check(&hook_rules, true));
+            checks.push(text_contains_check(
+                &hook_rules,
+                "dummyjson_users.json",
+                true,
+            ));
         }
         AgentTarget::Gemini => {
             let base = gemini_dir();
             let guide = base.join("DTK.md");
             let skill = base.join("skills").join("dtk").join("SKILL.md");
             let settings = base.join("settings.json");
+            let hooks = default_config_dir().join("hooks.json");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
@@ -137,6 +155,8 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
                 "dtk_hook_route --provider gemini",
                 true,
             ));
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(&hooks, "dummyjson_users.json", true));
         }
         AgentTarget::Windsurf => {
             let rules = PathBuf::from(".windsurfrules");
