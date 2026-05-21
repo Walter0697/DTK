@@ -159,6 +159,8 @@ DTK works as a structured routing layer, not a hard replacement for RTK.
 - If the filtered output would be larger than the original, DTK records that as a fallback issue and returns the original payload instead.
 - If it does not find a match, DTK returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
 
+For hook-based providers, DTK installs a single provider-specific hook entry that launches `dtk_hook_route`; that route then composes the final command through `rtk dtk exec -- ...` when a config matches. Claude, Cursor, Copilot, Gemini, OpenCode, and Hermes use that hook path. Windsurf, Cline, KiloCode, and Antigravity use prompt-level guidance files, and Codex remains prompt-only through the `AGENTS.md`/`DTK.md` path.
+
 ## How to Add Configuration
 
 DTK can install an optional configuration skill during setup.

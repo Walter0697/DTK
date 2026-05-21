@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use dtk::{claude_dir, codex_dir, cursor_dir, AgentTarget};
+use dtk::{claude_dir, codex_dir, cursor_dir, default_config_dir, gemini_dir, AgentTarget};
 
 #[derive(Debug, Clone)]
 pub(super) struct DoctorCheck {
@@ -23,8 +23,26 @@ pub(super) fn doctor_checks(
             checks.extend(agent_doctor_checks(AgentTarget::Codex));
             checks.extend(agent_doctor_checks(AgentTarget::Claude));
             checks.extend(agent_doctor_checks(AgentTarget::Cursor));
+            checks.extend(agent_doctor_checks(AgentTarget::Copilot));
+            checks.extend(agent_doctor_checks(AgentTarget::Gemini));
+            checks.extend(agent_doctor_checks(AgentTarget::Windsurf));
+            checks.extend(agent_doctor_checks(AgentTarget::Cline));
+            checks.extend(agent_doctor_checks(AgentTarget::KiloCode));
+            checks.extend(agent_doctor_checks(AgentTarget::Antigravity));
+            checks.extend(agent_doctor_checks(AgentTarget::OpenCode));
+            checks.extend(agent_doctor_checks(AgentTarget::Hermes));
         }
-        AgentTarget::Codex | AgentTarget::Claude | AgentTarget::Cursor => {
+        AgentTarget::Codex
+        | AgentTarget::Claude
+        | AgentTarget::Cursor
+        | AgentTarget::Copilot
+        | AgentTarget::Gemini
+        | AgentTarget::Windsurf
+        | AgentTarget::Cline
+        | AgentTarget::KiloCode
+        | AgentTarget::Antigravity
+        | AgentTarget::OpenCode
+        | AgentTarget::Hermes => {
             checks.extend(agent_doctor_checks(target));
         }
     }
@@ -34,11 +52,19 @@ pub(super) fn doctor_checks(
     checks
 }
 
-pub(super) fn detect_installed_selection() -> [bool; 3] {
+pub(super) fn detect_installed_selection() -> [bool; 11] {
     [
         codex_artifacts_present(),
         claude_artifacts_present(),
         cursor_artifacts_present(),
+        copilot_artifacts_present(),
+        gemini_artifacts_present(),
+        windsurf_artifacts_present(),
+        cline_artifacts_present(),
+        kilocode_artifacts_present(),
+        antigravity_artifacts_present(),
+        opencode_artifacts_present(),
+        hermes_artifacts_present(),
     ]
 }
 
@@ -56,18 +82,125 @@ fn agent_doctor_checks(target: AgentTarget) -> Vec<DoctorCheck> {
             let guide = claude_dir().join("DTK.md");
             let skill = claude_dir().join("skills").join("dtk").join("SKILL.md");
             let claude_md = claude_dir().join("CLAUDE.md");
+            let settings = claude_dir().join("settings.json");
+            let hooks = default_config_dir().join("hooks.json");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
             checks.push(file_check(&claude_md, true));
             checks.push(text_contains_check(&claude_md, "@DTK.md", true));
+            checks.push(file_check(&settings, true));
+            checks.push(text_contains_check(
+                &settings,
+                "dtk_hook_route --provider claude",
+                true,
+            ));
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(&hooks, "dummyjson_users.json", true));
         }
         AgentTarget::Cursor => {
             let guide = cursor_dir().join("DTK.md");
             let skill = cursor_dir().join("skills").join("dtk").join("SKILL.md");
+            let hooks = cursor_dir().join("hooks.json");
+            let hook_rules = default_config_dir().join("hooks.json");
             checks.push(file_check(&guide, true));
             checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
             checks.push(file_check(&skill, false));
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(
+                &hooks,
+                "dtk_hook_route --provider cursor",
+                true,
+            ));
+            checks.push(file_check(&hook_rules, true));
+            checks.push(text_contains_check(
+                &hook_rules,
+                "dummyjson_users.json",
+                true,
+            ));
+        }
+        AgentTarget::Copilot => {
+            let hooks = std::path::PathBuf::from(".github")
+                .join("hooks")
+                .join("dtk-rewrite.json");
+            let instructions = std::path::PathBuf::from(".github").join("copilot-instructions.md");
+            let hook_rules = default_config_dir().join("hooks.json");
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(
+                &hooks,
+                "dtk_hook_route --provider copilot",
+                true,
+            ));
+            checks.push(file_check(&instructions, true));
+            checks.push(text_contains_check(&instructions, "dtk exec", true));
+            checks.push(file_check(&hook_rules, true));
+            checks.push(text_contains_check(
+                &hook_rules,
+                "dummyjson_users.json",
+                true,
+            ));
+        }
+        AgentTarget::Gemini => {
+            let base = gemini_dir();
+            let guide = base.join("DTK.md");
+            let skill = base.join("skills").join("dtk").join("SKILL.md");
+            let settings = base.join("settings.json");
+            let hooks = default_config_dir().join("hooks.json");
+            checks.push(file_check(&guide, true));
+            checks.push(text_contains_check(&guide, "DTK Config Assistant", true));
+            checks.push(file_check(&skill, false));
+            checks.push(file_check(&settings, true));
+            checks.push(text_contains_check(
+                &settings,
+                "dtk_hook_route --provider gemini",
+                true,
+            ));
+            checks.push(file_check(&hooks, true));
+            checks.push(text_contains_check(&hooks, "dummyjson_users.json", true));
+        }
+        AgentTarget::Windsurf => {
+            let rules = PathBuf::from(".windsurfrules");
+            checks.push(file_check(&rules, true));
+            checks.push(text_contains_check(&rules, "dtk exec", true));
+        }
+        AgentTarget::Cline => {
+            let rules = PathBuf::from(".clinerules");
+            checks.push(file_check(&rules, true));
+            checks.push(text_contains_check(&rules, "dtk exec", true));
+        }
+        AgentTarget::KiloCode => {
+            let rules = PathBuf::from(".kilocode")
+                .join("rules")
+                .join("rtk-rules.md");
+            checks.push(file_check(&rules, true));
+            checks.push(text_contains_check(&rules, "dtk exec", true));
+        }
+        AgentTarget::Antigravity => {
+            let rules = PathBuf::from(".agents")
+                .join("rules")
+                .join("antigravity-rtk-rules.md");
+            checks.push(file_check(&rules, true));
+            checks.push(text_contains_check(&rules, "dtk exec", true));
+        }
+        AgentTarget::OpenCode => {
+            let plugin = PathBuf::from(".config")
+                .join("opencode")
+                .join("plugins")
+                .join("dtk.ts");
+            checks.push(file_check(&plugin, true));
+            checks.push(text_contains_check(&plugin, "dtk exec --", true));
+        }
+        AgentTarget::Hermes => {
+            let base = hermes_home();
+            let plugin = base.join("plugins").join("dtk-rewrite");
+            let init = plugin.join("__init__.py");
+            let manifest = plugin.join("plugin.yaml");
+            let config = base.join("config.yaml");
+            checks.push(file_check(&init, true));
+            checks.push(file_check(&manifest, true));
+            checks.push(text_contains_check(&init, "dtk exec --", true));
+            checks.push(file_check(&config, true));
+            checks.push(text_contains_check(&config, "dtk-rewrite", true));
         }
         AgentTarget::All => unreachable!(),
     }
@@ -180,7 +313,8 @@ fn claude_artifacts_present() -> bool {
     }
     let settings = base.join("settings.json");
     if let Ok(content) = fs::read_to_string(settings) {
-        return content.contains("dtk-rewrite.sh");
+        return content.contains("dtk_hook_route --provider claude")
+            || content.contains("dtk-rewrite.sh");
     }
     false
 }
@@ -195,7 +329,92 @@ fn cursor_artifacts_present() -> bool {
     }
     let hooks = base.join("hooks.json");
     if let Ok(content) = fs::read_to_string(hooks) {
-        return content.contains("dtk-rewrite.sh");
+        return content.contains("dtk_hook_route --provider cursor")
+            || content.contains("dtk-rewrite.sh");
     }
     false
+}
+
+fn gemini_artifacts_present() -> bool {
+    let base = gemini_dir();
+    if base.join("DTK.md").exists() || base.join("skills").join("dtk").join("SKILL.md").exists() {
+        return true;
+    }
+    let settings = base.join("settings.json");
+    if let Ok(content) = fs::read_to_string(settings) {
+        return content.contains("dtk_hook_route --provider gemini")
+            || content.contains("dtk-rewrite.sh");
+    }
+    false
+}
+
+fn copilot_artifacts_present() -> bool {
+    let hooks = std::path::PathBuf::from(".github")
+        .join("hooks")
+        .join("dtk-rewrite.json");
+    let instructions = std::path::PathBuf::from(".github").join("copilot-instructions.md");
+    if hooks.exists() || instructions.exists() {
+        return true;
+    }
+    if let Ok(content) = fs::read_to_string(&hooks) {
+        if content.contains("dtk_hook_route --provider copilot") {
+            return true;
+        }
+    }
+    if let Ok(content) = fs::read_to_string(&instructions) {
+        if content.contains("dtk exec") {
+            return true;
+        }
+    }
+    false
+}
+
+fn windsurf_artifacts_present() -> bool {
+    PathBuf::from(".windsurfrules").exists()
+}
+
+fn cline_artifacts_present() -> bool {
+    PathBuf::from(".clinerules").exists()
+}
+
+fn kilocode_artifacts_present() -> bool {
+    PathBuf::from(".kilocode")
+        .join("rules")
+        .join("rtk-rules.md")
+        .exists()
+}
+
+fn antigravity_artifacts_present() -> bool {
+    PathBuf::from(".agents")
+        .join("rules")
+        .join("antigravity-rtk-rules.md")
+        .exists()
+}
+
+fn opencode_artifacts_present() -> bool {
+    PathBuf::from(".config")
+        .join("opencode")
+        .join("plugins")
+        .join("dtk.ts")
+        .exists()
+}
+
+fn hermes_artifacts_present() -> bool {
+    let base = hermes_home();
+    let plugin = base.join("plugins").join("dtk-rewrite");
+    plugin.join("__init__.py").exists()
+        || plugin.join("plugin.yaml").exists()
+        || base.join("config.yaml").exists()
+}
+
+fn hermes_home() -> PathBuf {
+    std::env::var("DTK_HERMES_DIR")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("HERMES_HOME").map(PathBuf::from))
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".hermes")
+        })
 }

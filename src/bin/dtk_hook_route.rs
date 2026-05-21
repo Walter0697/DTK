@@ -2,16 +2,14 @@ use std::io::{self, Read};
 use std::process::ExitCode;
 
 use serde::Deserialize;
+use serde_json::Value;
 
-#[derive(Debug, Deserialize)]
-struct HookInput {
-    _tool_name: Option<String>,
-    tool_input: Option<HookToolInput>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HookToolInput {
-    command: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookProvider {
+    Claude,
+    Cursor,
+    Copilot,
+    Gemini,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,25 +31,23 @@ struct HookRule {
 }
 
 fn main() -> ExitCode {
+    let provider = parse_provider();
     let mut buffer = String::new();
     if let Err(err) = io::stdin().read_to_string(&mut buffer) {
         eprintln!("failed to read hook input: {err}");
-        return ExitCode::from(1);
+        return allow_noop(provider);
     }
 
-    let input: HookInput = match serde_json::from_str(&buffer) {
+    let input: Value = match serde_json::from_str(&buffer) {
         Ok(input) => input,
         Err(_) => {
-            return allow_noop();
+            return allow_noop(provider);
         }
     };
 
-    let command = input
-        .tool_input
-        .and_then(|tool_input| tool_input.command)
-        .unwrap_or_default();
+    let command = extract_command(provider, &input).unwrap_or_default();
     if command.is_empty() {
-        return allow_noop();
+        return allow_noop(provider);
     }
 
     let command = normalize_command_for_matching(&command);
@@ -65,13 +61,13 @@ fn main() -> ExitCode {
     let rules_text = match std::fs::read_to_string(&rules_path) {
         Ok(text) => text,
         Err(_) => {
-            return allow_noop();
+            return allow_noop(provider);
         }
     };
 
     let rules: HookRules = match serde_json::from_str(&rules_text) {
         Ok(rules) => rules,
-        Err(_) => return allow_noop(),
+        Err(_) => return allow_noop(provider),
     };
 
     for rule in rules.rules {
@@ -95,11 +91,11 @@ fn main() -> ExitCode {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
                 "permissionDecisionReason": format!(
-                    "DTK auto-wrap{}",
-                    rule.name
-                        .as_deref()
-                        .map(|name| format!(": {name}"))
-                        .unwrap_or_default()
+                "DTK auto-wrap{}",
+                rule.name
+                    .as_deref()
+                    .map(|name| format!(": {name}"))
+                    .unwrap_or_default()
                 ),
                 "updatedInput": {
                     "command": wrapped
@@ -107,14 +103,11 @@ fn main() -> ExitCode {
             }
         });
 
-        println!(
-            "{}",
-            serde_json::to_string(&response).expect("valid hook response")
-        );
+        println!("{}", format_hook_response(provider, response));
         return ExitCode::from(0);
     }
 
-    allow_noop()
+    allow_noop(provider)
 }
 
 fn rule_matches(rule: &HookRule, command: &str) -> bool {
@@ -145,6 +138,46 @@ fn normalize_command_for_matching(command: &str) -> String {
     trimmed.to_string()
 }
 
+fn extract_command(provider: HookProvider, input: &Value) -> Option<String> {
+    match provider {
+        HookProvider::Copilot => extract_copilot_command(input),
+        _ => input
+            .pointer("/tool_input/command")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
+    }
+}
+
+fn extract_copilot_command(input: &Value) -> Option<String> {
+    if let Some(tool_name) = input.get("tool_name").and_then(|value| value.as_str()) {
+        if matches!(tool_name, "runTerminalCommand" | "Bash" | "bash") {
+            return input
+                .pointer("/tool_input/command")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+        }
+        return None;
+    }
+
+    if let Some(tool_name) = input.get("toolName").and_then(|value| value.as_str()) {
+        if tool_name == "bash" {
+            if let Some(tool_args_str) = input.get("toolArgs").and_then(|value| value.as_str()) {
+                if let Ok(tool_args) = serde_json::from_str::<Value>(tool_args_str) {
+                    return tool_args
+                        .get("command")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn shell_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
@@ -160,6 +193,9 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::normalize_command_for_matching;
+    use super::parse_provider_value;
+    use super::HookProvider;
+    use serde_json::json;
 
     #[test]
     fn unwraps_rtk_proxy_prefix() {
@@ -176,15 +212,109 @@ mod tests {
             "curl -sS https://dummyjson.com/users"
         );
     }
+
+    #[test]
+    fn parses_gemini_provider() {
+        assert_eq!(parse_provider_value("gemini"), HookProvider::Gemini);
+    }
+
+    #[test]
+    fn extracts_copilot_vscode_command() {
+        let input = json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status" }
+        });
+        assert_eq!(
+            super::extract_command(HookProvider::Copilot, &input),
+            Some("git status".to_string())
+        );
+    }
 }
 
-fn allow_noop() -> ExitCode {
-    let response = serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow"
+fn parse_provider() -> HookProvider {
+    let mut args = std::env::args().skip(1);
+    let mut provider = HookProvider::Claude;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--provider" => {
+                let value = args.next().unwrap_or_else(|| "claude".to_string());
+                provider = parse_provider_value(&value);
+            }
+            _ if arg.starts_with("--provider=") => {
+                let value = arg.trim_start_matches("--provider=");
+                provider = parse_provider_value(value);
+            }
+            _ => {}
         }
-    });
+    }
+
+    provider
+}
+
+fn parse_provider_value(value: &str) -> HookProvider {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cursor" => HookProvider::Cursor,
+        "copilot" => HookProvider::Copilot,
+        "gemini" => HookProvider::Gemini,
+        _ => HookProvider::Claude,
+    }
+}
+
+fn format_hook_response(provider: HookProvider, response: serde_json::Value) -> String {
+    match provider {
+        HookProvider::Claude => serde_json::to_string(&response).expect("valid hook response"),
+        HookProvider::Cursor => {
+            let command = response
+                .pointer("/hookSpecificOutput/updatedInput/command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            serde_json::to_string(&serde_json::json!({
+                "permission": "allow",
+                "updated_input": {
+                    "command": command
+                }
+            }))
+            .expect("valid hook response")
+        }
+        HookProvider::Copilot => serde_json::to_string(&response).expect("valid hook response"),
+        HookProvider::Gemini => {
+            let command = response
+                .pointer("/hookSpecificOutput/updatedInput/command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            serde_json::to_string(&serde_json::json!({
+                "decision": "allow",
+                "hookSpecificOutput": {
+                    "tool_input": {
+                        "command": command
+                    }
+                }
+            }))
+            .expect("valid hook response")
+        }
+    }
+}
+
+fn allow_noop(provider: HookProvider) -> ExitCode {
+    let response = match provider {
+        HookProvider::Claude => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow"
+            }
+        }),
+        HookProvider::Cursor => serde_json::json!({}),
+        HookProvider::Copilot => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow"
+            }
+        }),
+        HookProvider::Gemini => serde_json::json!({
+            "decision": "allow"
+        }),
+    };
     println!(
         "{}",
         serde_json::to_string(&response).expect("valid hook response")

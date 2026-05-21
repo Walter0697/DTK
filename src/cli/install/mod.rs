@@ -159,7 +159,19 @@ where
 
 fn expand_target(target: AgentTarget) -> Vec<AgentTarget> {
     match target {
-        AgentTarget::All => vec![AgentTarget::Codex, AgentTarget::Claude, AgentTarget::Cursor],
+        AgentTarget::All => vec![
+            AgentTarget::Codex,
+            AgentTarget::Claude,
+            AgentTarget::Cursor,
+            AgentTarget::Copilot,
+            AgentTarget::Gemini,
+            AgentTarget::Windsurf,
+            AgentTarget::Cline,
+            AgentTarget::KiloCode,
+            AgentTarget::Antigravity,
+            AgentTarget::OpenCode,
+            AgentTarget::Hermes,
+        ],
         other => vec![other],
     }
 }

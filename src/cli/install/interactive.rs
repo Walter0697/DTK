@@ -6,7 +6,32 @@ use dtk::{install_config_skill, AgentTarget};
 
 use super::doctor::detect_installed_selection;
 
+const INTERACTIVE_TARGETS: [AgentTarget; 11] = [
+    AgentTarget::Codex,
+    AgentTarget::Claude,
+    AgentTarget::Cursor,
+    AgentTarget::Copilot,
+    AgentTarget::Gemini,
+    AgentTarget::Windsurf,
+    AgentTarget::Cline,
+    AgentTarget::KiloCode,
+    AgentTarget::Antigravity,
+    AgentTarget::OpenCode,
+    AgentTarget::Hermes,
+];
+
 pub(super) fn maybe_install_skill_interactive(target: AgentTarget) {
+    if !matches!(
+        target,
+        AgentTarget::All
+            | AgentTarget::Codex
+            | AgentTarget::Claude
+            | AgentTarget::Cursor
+            | AgentTarget::Gemini
+    ) {
+        return;
+    }
+
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return;
     }
@@ -28,16 +53,17 @@ pub(super) fn select_target_interactive(
     detected: AgentTarget,
     action: &str,
 ) -> Option<AgentTarget> {
-    let mut selected = [false, false, false];
+    let mut selected = [false; INTERACTIVE_TARGETS.len()];
     apply_detected_selection(detected, &mut selected);
 
-    let labels = vec![
-        format!("Auto-detect (apply: {})", detected.as_str()),
-        "codex".to_string(),
-        "claude".to_string(),
-        "cursor".to_string(),
-    ];
-    let defaults = vec![false, selected[0], selected[1], selected[2]];
+    let mut labels = vec![format!("Auto-detect (apply: {})", detected.as_str())];
+    labels.extend(
+        INTERACTIVE_TARGETS
+            .iter()
+            .map(|target| target.as_str().to_string()),
+    );
+    let mut defaults = vec![false];
+    defaults.extend(selected.iter().copied());
     let prompt = format!(
         "Select coding agents for DTK {} (space=toggle, enter=confirm)",
         action
@@ -52,12 +78,12 @@ pub(super) fn select_target_interactive(
 
     match choices {
         Ok(Some(indices)) => {
-            let mut resolved = [false, false, false];
+            let mut resolved = [false; INTERACTIVE_TARGETS.len()];
             let mut apply_auto = false;
             for idx in indices {
                 if idx == 0 {
                     apply_auto = true;
-                } else if idx <= 3 {
+                } else if idx - 1 < resolved.len() {
                     resolved[idx - 1] = true;
                 }
             }
@@ -70,21 +96,19 @@ pub(super) fn select_target_interactive(
     }
 }
 
-pub(super) fn selection_to_target(selected: &[bool; 3], detected: AgentTarget) -> AgentTarget {
-    let count = selected.iter().filter(|value| **value).count();
-    if count == 0 {
-        return detected;
+pub(super) fn selection_to_target(selected: &[bool], detected: AgentTarget) -> AgentTarget {
+    let mut chosen: Option<AgentTarget> = None;
+    for (idx, is_selected) in selected.iter().enumerate() {
+        if !is_selected {
+            continue;
+        }
+        let target = INTERACTIVE_TARGETS[idx];
+        if chosen.replace(target).is_some() {
+            return AgentTarget::All;
+        }
     }
-    if count > 1 {
-        return AgentTarget::All;
-    }
-    if selected[0] {
-        AgentTarget::Codex
-    } else if selected[1] {
-        AgentTarget::Claude
-    } else {
-        AgentTarget::Cursor
-    }
+
+    chosen.unwrap_or(detected)
 }
 
 fn prompt_skill_install(target: AgentTarget) -> bool {
@@ -155,18 +179,28 @@ fn run_skill_steps(target: AgentTarget) -> ExitCode {
 
 fn expand_target(target: AgentTarget) -> Vec<AgentTarget> {
     match target {
-        AgentTarget::All => vec![AgentTarget::Codex, AgentTarget::Claude, AgentTarget::Cursor],
+        AgentTarget::All => vec![
+            AgentTarget::Codex,
+            AgentTarget::Claude,
+            AgentTarget::Cursor,
+            AgentTarget::Gemini,
+        ],
         other => vec![other],
     }
 }
 
-fn apply_detected_selection(detected: AgentTarget, selected: &mut [bool; 3]) {
-    *selected = [false, false, false];
-    match detected {
-        AgentTarget::All => *selected = [true, true, true],
-        AgentTarget::Codex => selected[0] = true,
-        AgentTarget::Claude => selected[1] = true,
-        AgentTarget::Cursor => selected[2] = true,
+fn apply_detected_selection(detected: AgentTarget, selected: &mut [bool]) {
+    selected.fill(false);
+    if detected == AgentTarget::All {
+        selected.fill(true);
+        return;
+    }
+
+    if let Some(index) = INTERACTIVE_TARGETS
+        .iter()
+        .position(|candidate| *candidate == detected)
+    {
+        selected[index] = true;
     }
 }
 
