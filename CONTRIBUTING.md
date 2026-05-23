@@ -31,5 +31,4 @@ cargo test
 
 ## Releases
 
-Release artifacts and the Homebrew tap update should be driven from tagged releases.
-Set `HOMEBREW_TAP_TOKEN` in GitHub Actions as a secret with write access to `rtk-ai/homebrew-tap`.
+Release artifacts should be driven from tagged releases.
