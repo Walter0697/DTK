@@ -1,0 +1,59 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag-name:
+        description: "Release tag to publish, e.g. v0.1.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Skip Homebrew updates for prereleases"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump-homebrew:
+    name: Bump Homebrew formula
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        (github.event_name != 'release' || !github.event.release.prerelease)
+        && (github.event_name != 'workflow_dispatch' || !inputs.prerelease)
+      }}
+
+    steps:
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag-name }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+
+          echo "tag-name=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        uses: mislav/bump-homebrew-formula-action@v4
+        with:
+          formula-name: dtk
+          formula-path: Formula/dtk.rb
+          homebrew-tap: rtk-ai/homebrew-tap
+          base-branch: main
+          tag-name: ${{ steps.meta.outputs.tag-name }}
+          commit-message: |
+            dtk {{version}}
+            Created by https://github.com/mislav/bump-homebrew-formula-action
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
