@@ -7,13 +7,13 @@ This document is for maintainers.
 1. Merge the release-ready changes to `main`.
 2. Create a tagged release from `main`.
 3. Let GitHub Actions build the release artifacts.
-4. Let the Homebrew tap workflow update `rtk-ai/homebrew-tap`.
+4. Let the Homebrew tap workflow update `Walter0697/homebrew-tap`.
 
 ## Required Secret
 
 Set `HOMEBREW_TAP_TOKEN` in GitHub Actions.
 
-The token needs write access to `rtk-ai/homebrew-tap`.
+The token needs write access to `Walter0697/homebrew-tap`.
 A classic PAT with `repo` and `workflow` scopes is the simplest option.
 
 ## Notes
