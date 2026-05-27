@@ -25,7 +25,15 @@ pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
     }
 
     let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-    let resolved_config_path = resolve_config_path(&options.config_path);
+    let Some(config_path) = options.config_path else {
+        print!("{stdout_text}");
+        return match output.status.code() {
+            Some(code) => ExitCode::from(code as u8),
+            None => ExitCode::from(1),
+        };
+    };
+
+    let resolved_config_path = resolve_config_path(&config_path);
     let config = match load_filter_config(&resolved_config_path) {
         Ok(config) => config,
         Err(err) => {

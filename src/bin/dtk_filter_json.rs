@@ -3,14 +3,12 @@ use std::process::ExitCode;
 
 use dtk::{
     filter_json_payload_with_ref, load_filter_config, parse_json_payload, resolve_config_path,
-    runtime_store_dir, store_filtered_payload, store_original_payload, DEFAULT_SAMPLE_CONFIG_NAME,
+    runtime_store_dir, store_filtered_payload, store_original_payload,
 };
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let config_path = args
-        .next()
-        .unwrap_or_else(|| DEFAULT_SAMPLE_CONFIG_NAME.to_string());
+    let config_path = args.next();
 
     let input = if let Some(text) = args.next() {
         text
@@ -26,6 +24,11 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
         buffer
+    };
+
+    let Some(config_path) = config_path else {
+        println!("{input}");
+        return ExitCode::from(0);
     };
 
     let Some(value) = parse_json_payload(&input) else {
