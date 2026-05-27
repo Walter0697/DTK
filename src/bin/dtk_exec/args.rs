@@ -1,15 +1,13 @@
-use dtk::DEFAULT_SAMPLE_CONFIG_NAME;
-
 #[derive(Debug, Clone)]
 pub(super) struct ExecOptions {
-    pub(super) config_path: String,
+    pub(super) config_path: Option<String>,
     pub(super) retention_days: Option<u64>,
     pub(super) command_args: Vec<String>,
 }
 
 pub(super) fn parse_exec_args() -> Result<ExecOptions, i32> {
     let mut args = std::env::args().skip(1);
-    let mut config_path = DEFAULT_SAMPLE_CONFIG_NAME.to_string();
+    let mut config_path: Option<String> = None;
     let mut retention_days: Option<u64> = None;
     let mut command_args: Vec<String> = Vec::new();
     let mut seen_separator = false;
@@ -26,7 +24,7 @@ pub(super) fn parse_exec_args() -> Result<ExecOptions, i32> {
                     eprintln!("missing value for --config");
                     return Err(2);
                 };
-                config_path = path;
+                config_path = Some(path);
             }
             "--retention-days" => {
                 let Some(days) = args.next() else {
