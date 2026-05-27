@@ -7,17 +7,16 @@ This document is for maintainers.
 1. Merge the release-ready changes to `main`.
 2. Create a tagged release from `main`.
 3. Let GitHub Actions build the release artifacts.
-4. Let the Homebrew tap workflow update `Walter0697/homebrew-tap`.
+4. Manually update `Walter0697/homebrew-tap` if you want the tap to point at the new release.
 
 ## Required Secret
 
-Set `HOMEBREW_TAP_TOKEN` in GitHub Actions.
+No extra secret is required for manual tap updates.
 
-The token needs write access to `Walter0697/homebrew-tap`.
-A classic PAT with `repo` and `workflow` scopes is the simplest option.
+If you later re-enable automation, set `HOMEBREW_TAP_TOKEN` in GitHub Actions and give it write access to `Walter0697/homebrew-tap`.
 
 ## Notes
 
-- The Homebrew update is maintainer-only release automation.
+- The Homebrew update is maintainer-only release work.
 - Contributors do not need to manage tap publishing.
 - Prereleases should not update the tap unless you explicitly opt in.
