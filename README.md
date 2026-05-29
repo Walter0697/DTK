@@ -20,6 +20,16 @@ Use `./install.sh` for the release-based install path and `./install-dev.sh` whe
 Use `dtk install` for the default JSON dummyjson demo config.
 Use `dtk install-dummy` when you want the broader bundled sample set, including the TOML Cargo.lock-style example, a TOML Python manifest example, a Terraform-style HCL variables example, a CSV inventory export example, an INI plugin registry example, an XML RSS feed example, a XAML ResourceDictionary example, the YAML Kubernetes example config, and their sample payloads.
 
+## Homebrew
+
+```bash
+brew tap Walter0697/tap
+brew install dtk
+```
+
+If you prefer, `brew install Walter0697/tap/dtk` also works after the tap is available.
+The tap repository is `Walter0697/homebrew-tap`.
+
 The repo is pinned to the current stable Rust toolchain via `rust-toolchain.toml`. If your local `cargo` is too old and reports that `Cargo.lock` version `4` is unsupported, run `rustup update stable && rustup default stable` and retry.
 
 After that, run a command through DTK:
