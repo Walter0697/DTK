@@ -106,7 +106,7 @@ DTK is designed to work like an agent-facing prompt workflow, not as an install-
 RTK and DTK are complementary:
 
 - Use plain `dtk` for DTK commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
-- For curl and other ordinary shell/API commands, use `dtk exec --use-rtk -- <command> [args...]` when you want RTK formatting first and then DTK filtering.
+- For curl and other ordinary shell/API commands, use `dtk exec --use-rtk -- <command> [args...]` when you want DTK config lookup first and RTK proxy fallback for unmatched curl commands.
 - Use plain `dtk exec -- <command> [args...]` when you only want DTK filtering.
 - If `rtk` is not installed, DTK falls back to running the command directly before filtering.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.

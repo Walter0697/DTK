@@ -79,7 +79,7 @@ fn main() -> ExitCode {
             continue;
         };
 
-        let mut wrapped = format!("dtk exec --use-rtk --config {}", shell_quote(&config));
+        let mut wrapped = format!("dtk exec --config {}", shell_quote(&config));
         if let Some(days) = rule.retention_days {
             wrapped.push_str(&format!(" --retention-days {days}"));
         }
@@ -99,6 +99,22 @@ fn main() -> ExitCode {
                 ),
                 "updatedInput": {
                     "command": wrapped
+                }
+            }
+        });
+
+        println!("{}", format_hook_response(provider, response));
+        return ExitCode::from(0);
+    }
+
+    if is_curl_command(&command) && command_exists("rtk") {
+        let response = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": "RTK proxy fallback",
+                "updatedInput": {
+                    "command": format!("rtk proxy {}", command)
                 }
             }
         });
@@ -136,6 +152,30 @@ fn normalize_command_for_matching(command: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+fn is_curl_command(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .map(|token| token == "curl")
+        .unwrap_or(false)
+}
+
+fn command_exists(binary: &str) -> bool {
+    let path = match std::env::var_os("PATH") {
+        Some(path) => path,
+        None => return false,
+    };
+
+    for entry in std::env::split_paths(&path) {
+        let candidate = entry.join(binary);
+        if candidate.is_file() {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn extract_command(provider: HookProvider, input: &Value) -> Option<String> {
@@ -228,6 +268,12 @@ mod tests {
             super::extract_command(HookProvider::Copilot, &input),
             Some("git status".to_string())
         );
+    }
+
+    #[test]
+    fn recognizes_curl_commands() {
+        assert!(super::is_curl_command("curl -sS https://example.com"));
+        assert!(!super::is_curl_command("git status"));
     }
 }
 
