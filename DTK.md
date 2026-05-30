@@ -105,12 +105,14 @@ Example:
 DTK is designed to work like an agent-facing prompt workflow, not as an install-time hook.
 RTK and DTK are complementary:
 
-- Always use `dtk` directly for DTK-native commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
-- For ordinary shell commands, prefer the combined wrapper `rtk dtk exec -- <command> [args...]` when you want token savings and DTK routing together.
+- Use plain `dtk` for DTK commands such as `dtk exec`, `dtk retrieve`, `dtk config ...`, `dtk doctor`, `dtk install`, `dtk install-dummy`, and `dtk uninstall`.
+- For curl and other ordinary shell/API commands, use `dtk exec --use-rtk -- <command> [args...]` when you want RTK formatting first and then DTK filtering.
+- Use plain `dtk exec -- <command> [args...]` when you only want DTK filtering.
+- If `rtk` is not installed, DTK falls back to running the command directly before filtering.
 - `dtk` should inspect the command and use a matching config or hook rule when one exists, but if nothing matches it should return the original command or payload unchanged.
 - The agent-facing payload surface is JSON-shaped even when the source data started as YAML, TOML, HCL, CSV, INI, XML, or XAML.
 - Use DTK whenever the command can be filtered, wrapped, or handled by a DTK config or hook rule.
-- Do not default to `rtk proxy` for curl/API/JSON flows when `dtk` can handle them.
+- Do not default to `rtk proxy` for curl/API/JSON flows when `dtk exec --use-rtk` or plain `dtk exec` can handle them.
 - For hook-based providers, DTK installs a provider-specific hook entry that launches `dtk_hook_route`; Claude, Cursor, Copilot, Gemini, OpenCode, and Hermes use this path. Windsurf, Cline, KiloCode, and Antigravity use prompt-level guidance files instead.
 
 Examples:

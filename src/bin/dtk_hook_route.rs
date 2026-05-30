@@ -79,7 +79,7 @@ fn main() -> ExitCode {
             continue;
         };
 
-        let mut wrapped = format!("rtk dtk exec --config {}", shell_quote(&config));
+        let mut wrapped = format!("dtk exec --use-rtk --config {}", shell_quote(&config));
         if let Some(days) = rule.retention_days {
             wrapped.push_str(&format!(" --retention-days {days}"));
         }
