@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Walter0697/DTK/compare/v0.0.4...v0.0.5) - 2026-06-05
+
+### Added
+
+- add DTK marketplace commands ([#18](https://github.com/Walter0697/DTK/pull/18))
+- add explicit RTK fallback for unmatched curl commands ([#17](https://github.com/Walter0697/DTK/pull/17))
+- seed DTK hook rules for hook providers
+
+### Fixed
+
+- remove implicit DTK sample config fallback
+
+### Other
+
+- Format RTK fallback payload helper
+- Add curl proxy fallback for DTK
+- Make DTK RTK use explicit
+- Add multi-provider support and detection provenance
+- Apply rustfmt
+- Add runtime source format hints
+
 ## [0.0.4](https://github.com/Walter0697/DTK/compare/v0.0.3...v0.0.4) - 2026-05-17
 
 ### Other
