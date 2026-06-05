@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::{args::ExecOptions, payload, shell};
 
 pub(super) fn run_exec_flow(options: ExecOptions) -> ExitCode {
-    let output = match payload::run_payload_command(&options.command_args) {
+    let output = match payload::run_payload_command(&options.command_args, options.use_rtk) {
         Ok(output) => output,
         Err(err) => {
             eprintln!("failed to run command {}: {err}", options.command_args[0]);

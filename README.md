@@ -169,7 +169,7 @@ DTK works as a structured routing layer, not a hard replacement for RTK.
 - If the filtered output would be larger than the original, DTK records that as a fallback issue and returns the original payload instead.
 - If it does not find a match, DTK returns the original command or payload unchanged, so RTK can still do its normal token-saving work.
 
-For hook-based providers, DTK installs a single provider-specific hook entry that launches `dtk_hook_route`; that route then composes the final command through `rtk dtk exec -- ...` when a config matches. Claude, Cursor, Copilot, Gemini, OpenCode, and Hermes use that hook path. Windsurf, Cline, KiloCode, and Antigravity use prompt-level guidance files, and Codex remains prompt-only through the `AGENTS.md`/`DTK.md` path.
+For hook-based providers, DTK installs a single provider-specific hook entry that launches `dtk_hook_route`; that route then composes the final command through `dtk exec --config ... -- ...` when a config matches. When no DTK config matches a curl command, DTK can fall back to `rtk proxy` if RTK is installed. Claude, Cursor, Copilot, Gemini, OpenCode, and Hermes use that hook path. Windsurf, Cline, KiloCode, and Antigravity use prompt-level guidance files, and Codex remains prompt-only through the `AGENTS.md`/`DTK.md` path.
 
 ## How to Add Configuration
 
@@ -338,13 +338,13 @@ Examples:
 }
 ```
 
-You can also combine DTK and RTK in one command:
+You can also ask DTK to use RTK first:
 
 ```bash
-rtk dtk exec -- git status
+dtk exec --use-rtk -- curl -sS https://api.notion.com/v1/users -H "Authorization: Bearer $NOTION_CONNECTOR_TOKEN" -H "Notion-Version: 2026-03-11"
 ```
 
-In that flow, DTK checks for a matching config first. If DTK has no config or schema for the command, it returns the original command unchanged, so the combined `rtk dtk exec -- <command>` path still works without special casing.
+In that flow, DTK checks for a matching config first. If DTK has no config or schema for the curl/API command, it falls back to `rtk proxy` when RTK is installed. Use plain `dtk exec -- <command>` when you want DTK filtering without RTK proxy fallback.
 
 ## Commands
 
