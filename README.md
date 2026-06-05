@@ -361,8 +361,11 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk hook add`
 - `dtk marketplace list [category]`
 - `dtk marketplace search <query>`
+- `dtk marketplace installed`
+- `dtk marketplace info <category|config>`
 - `dtk marketplace install <category|config> [--force]`
-- `dtk marketplace update [--force]`
+- `dtk marketplace uninstall <category|config> [--force]`
+- `dtk marketplace update [--dry-run] [--force]`
 - `dtk version`
 
 ### Marketplace
@@ -374,15 +377,20 @@ DTK can browse and install reusable configs from the public
 dtk marketplace list
 dtk marketplace list notion
 dtk marketplace search notion
+dtk marketplace info notion/pat/notion_search_pat
 dtk marketplace install notion
 dtk marketplace install notion/pat/notion_search_pat
+dtk marketplace installed
+dtk marketplace update --dry-run
 dtk marketplace update
+dtk marketplace uninstall notion/pat/notion_search_pat
 ```
 
 Marketplace installs are tracked in `~/.config/dtk/marketplace.json` using the marketplace Git
-revision and a checksum for each installed config. `update` refreshes unchanged local configs,
-skips locally modified configs, and reports configs removed upstream. Use `--force` only when you
-intend to overwrite local changes.
+revision and a checksum for each installed config. `installed` reports whether tracked files are
+current, locally modified, or missing. `update --dry-run` previews remote changes without writing.
+`update` refreshes unchanged local configs and skips locally modified configs. `uninstall` only
+removes manifest-tracked configs and also preserves locally modified files unless `--force` is used.
 
 ### Gain
 
@@ -432,9 +440,10 @@ Branch protection and PR-only merges are configured on GitHub, not in the repo i
 
 ## Roadmap
 
-1. Add PII-aware filtering.
-2. Improve TUI and GUI management.
-3. Add more release and distribution methods.
+1. Add marketplace validation and trust controls.
+2. Add offline marketplace caching and custom marketplace sources.
+3. Improve interactive terminal management.
+4. Add more release and distribution methods.
 
 ## License
 

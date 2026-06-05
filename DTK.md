@@ -35,8 +35,11 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `dtk config delete <config>`
 - `dtk marketplace list [category]`
 - `dtk marketplace search <query>`
+- `dtk marketplace installed`
+- `dtk marketplace info <category|config>`
 - `dtk marketplace install <category|config> [--force]`
-- `dtk marketplace update [--force]`
+- `dtk marketplace uninstall <category|config> [--force]`
+- `dtk marketplace update [--dry-run] [--force]`
 - `dtk version`
 - `./install.sh`
 - `dtk install`
@@ -71,14 +74,20 @@ DTK can browse and install reusable configs from the public DTK marketplace:
 dtk marketplace list
 dtk marketplace list notion
 dtk marketplace search notion
+dtk marketplace info notion/pat/notion_search_pat
 dtk marketplace install notion
 dtk marketplace install notion/pat/notion_search_pat
+dtk marketplace installed
+dtk marketplace update --dry-run
 dtk marketplace update
+dtk marketplace uninstall notion/pat/notion_search_pat
 ```
 
 Marketplace installs are tracked in `~/.config/dtk/marketplace.json` using the marketplace Git
-revision and a checksum for each installed config. `update` refreshes unchanged local configs and
-skips locally modified configs. Use `--force` only when you intend to overwrite local changes.
+revision and a checksum for each installed config. `installed` reports whether tracked files are
+current, locally modified, or missing. `update --dry-run` previews remote changes without writing.
+`update` refreshes unchanged local configs and skips locally modified configs. `uninstall` only
+removes manifest-tracked configs and also preserves locally modified files unless `--force` is used.
 
 Example:
 
