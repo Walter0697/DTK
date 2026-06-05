@@ -438,13 +438,6 @@ While a session is active, DTK writes the session ticket into each metrics row. 
 
 Branch protection and PR-only merges are configured on GitHub, not in the repo itself. See [CONTRIBUTING.md](CONTRIBUTING.md) for the expected workflow.
 
-## Roadmap
-
-1. Add marketplace validation and trust controls.
-2. Add offline marketplace caching and custom marketplace sources.
-3. Improve interactive terminal management.
-4. Add more release and distribution methods.
-
 ## License
 
 MIT
