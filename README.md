@@ -359,7 +359,30 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk install-dummy`
 - `dtk uninstall`
 - `dtk hook add`
+- `dtk marketplace list [category]`
+- `dtk marketplace search <query>`
+- `dtk marketplace install <category|config> [--force]`
+- `dtk marketplace update [--force]`
 - `dtk version`
+
+### Marketplace
+
+DTK can browse and install reusable configs from the public
+[`Walter0697/dtk-marketplace`](https://github.com/Walter0697/dtk-marketplace) repository.
+
+```bash
+dtk marketplace list
+dtk marketplace list notion
+dtk marketplace search notion
+dtk marketplace install notion
+dtk marketplace install notion/pat/notion_search_pat
+dtk marketplace update
+```
+
+Marketplace installs are tracked in `~/.config/dtk/marketplace.json` using the marketplace Git
+revision and a checksum for each installed config. `update` refreshes unchanged local configs,
+skips locally modified configs, and reports configs removed upstream. Use `--force` only when you
+intend to overwrite local changes.
 
 ### Gain
 
