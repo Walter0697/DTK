@@ -38,7 +38,10 @@ fn run_payload_command_direct(command_args: &[String]) -> Result<Output, std::io
 }
 
 fn is_curl_command(command_args: &[String]) -> bool {
-    command_args.first().map(|value| value == "curl").unwrap_or(false)
+    command_args
+        .first()
+        .map(|value| value == "curl")
+        .unwrap_or(false)
 }
 
 pub(super) fn should_return_original_output(
