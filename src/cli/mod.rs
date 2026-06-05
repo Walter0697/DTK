@@ -2,6 +2,7 @@ mod cache;
 mod config;
 mod gain;
 mod install;
+mod marketplace;
 mod session;
 
 use std::path::PathBuf;
@@ -39,6 +40,10 @@ pub fn run() -> ExitCode {
 
     if command == "gain" {
         return gain::run_gain_command(args.collect());
+    }
+
+    if command == "marketplace" {
+        return marketplace::run_marketplace_command(args.collect());
     }
 
     if command == "hook" {
@@ -132,7 +137,7 @@ pub fn run() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "Usage: dtk <install|install-dummy|uninstall|doctor|hook|config|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor|copilot|gemini|windsurf|cline|kilocode|antigravity|opencode|hermes]"
+        "Usage: dtk <install|install-dummy|uninstall|doctor|hook|config|marketplace|exec|retrieve|cache|session|gain|version|help> [--agent all|codex|claude|cursor|copilot|gemini|windsurf|cline|kilocode|antigravity|opencode|hermes]"
     );
     eprintln!("Commands:");
     eprintln!("  dtk install");
@@ -143,6 +148,10 @@ fn print_usage() {
     eprintln!("  dtk config allow <add|remove> <config> <field>");
     eprintln!("  dtk config pii <add|remove> <config> <path> [options]");
     eprintln!("  dtk config delete <config>");
+    eprintln!("  dtk marketplace list [category]");
+    eprintln!("  dtk marketplace search <query>");
+    eprintln!("  dtk marketplace install <category|config> [--force]");
+    eprintln!("  dtk marketplace update [--force]");
     eprintln!("  dtk cache <list|show> [ref_id]");
     eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");
     eprintln!("  dtk gain [--limit N]");

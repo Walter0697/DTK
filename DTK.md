@@ -33,6 +33,10 @@ It reduces model-facing payloads while preserving recoverability of the original
 - `dtk config allow add <config> <field>`
 - `dtk config allow remove <config> <field>`
 - `dtk config delete <config>`
+- `dtk marketplace list [category]`
+- `dtk marketplace search <query>`
+- `dtk marketplace install <category|config> [--force]`
+- `dtk marketplace update [--force]`
 - `dtk version`
 - `./install.sh`
 - `dtk install`
@@ -58,6 +62,23 @@ Recommended fields:
 - `format` (optional parser override such as `json`, `yaml`, `toml`, `hcl`, `csv`, `ini`, `xml`, or `xaml`)
 - `content_path`
 - `allow`
+
+## Marketplace
+
+DTK can browse and install reusable configs from the public DTK marketplace:
+
+```bash
+dtk marketplace list
+dtk marketplace list notion
+dtk marketplace search notion
+dtk marketplace install notion
+dtk marketplace install notion/pat/notion_search_pat
+dtk marketplace update
+```
+
+Marketplace installs are tracked in `~/.config/dtk/marketplace.json` using the marketplace Git
+revision and a checksum for each installed config. `update` refreshes unchanged local configs and
+skips locally modified configs. Use `--force` only when you intend to overwrite local changes.
 
 Example:
 
