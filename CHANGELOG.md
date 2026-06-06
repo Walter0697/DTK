@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/Walter0697/DTK/compare/v0.0.5...v0.0.6) - 2026-06-06
+
+### Added
+
+- list marketplace from live catalog
+- add validated marketplace cache
+- add marketplace lifecycle commands
+
+### Other
+
+- remove roadmap
+
 ## [0.0.5](https://github.com/Walter0697/DTK/compare/v0.0.4...v0.0.5) - 2026-06-05
 
 ### Added
