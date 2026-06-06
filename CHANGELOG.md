@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7](https://github.com/Walter0697/DTK/compare/v0.0.6...v0.0.7) - 2026-06-06
+
+### Other
+
+- fix release-plz feature version bumps
+
 ## [0.0.6](https://github.com/Walter0697/DTK/compare/v0.0.5...v0.0.6) - 2026-06-06
 
 ### Added
