@@ -29,18 +29,6 @@ struct GitTreeEntry {
     kind: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct MarketplaceIndex {
-    schema_version: u32,
-    configs: Vec<MarketplaceIndexEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MarketplaceIndexEntry {
-    path: String,
-    checksum: String,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 struct MarketplaceCacheMetadata {
     version: u32,
@@ -297,7 +285,7 @@ fn run_list(args: Vec<String>, offline: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let source = match load_source(offline) {
+    let source = match load_list_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -667,49 +655,29 @@ fn load_source(offline: bool) -> io::Result<MarketplaceSource> {
     }
 }
 
+fn load_list_source(offline: bool) -> io::Result<MarketplaceSource> {
+    if offline || std::env::var("DTK_MARKETPLACE_PATH").is_ok() {
+        return load_source(offline);
+    }
+    load_remote_catalog()
+}
+
+fn load_remote_catalog() -> io::Result<MarketplaceSource> {
+    let repository = configured_repository();
+    let tree = load_remote_tree(&repository)?;
+    Ok(MarketplaceSource {
+        repository,
+        revision: tree.sha,
+        files: marketplace_files_from_tree(tree.tree),
+        local_root: None,
+        checksums: BTreeMap::new(),
+    })
+}
+
 fn refresh_remote_source() -> io::Result<MarketplaceSource> {
     let repository = configured_repository();
-    let url = format!("https://api.github.com/repos/{repository}/git/trees/main?recursive=1");
-    let response = curl_get(&url)?;
-    let tree = serde_json::from_slice::<GitTreeResponse>(&response).map_err(invalid_data)?;
-    let mut files = tree
-        .tree
-        .into_iter()
-        .filter(|entry| {
-            entry.kind == "blob"
-                && entry.path.ends_with(".json")
-                && entry.path != "marketplace-index.json"
-        })
-        .map(|entry| MarketplaceFile { path: entry.path })
-        .collect::<Vec<_>>();
-    let mut expected_checksums = BTreeMap::new();
-    let index_url = format!(
-        "https://raw.githubusercontent.com/{}/{}/marketplace-index.json",
-        repository, tree.sha
-    );
-    if let Ok(content) = curl_get(&index_url) {
-        let index = serde_json::from_slice::<MarketplaceIndex>(&content).map_err(invalid_data)?;
-        if index.schema_version != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "marketplace index schema version is unsupported",
-            ));
-        }
-        files.clear();
-        for entry in index.configs {
-            if expected_checksums
-                .insert(entry.path.clone(), entry.checksum)
-                .is_some()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("duplicate marketplace index path: {}", entry.path),
-                ));
-            }
-            files.push(MarketplaceFile { path: entry.path });
-        }
-    }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let tree = load_remote_tree(&repository)?;
+    let files = marketplace_files_from_tree(tree.tree);
     let snapshot_root = marketplace_cache_dir().join("snapshots").join(&tree.sha);
     let temporary_root = marketplace_cache_dir()
         .join("snapshots")
@@ -726,15 +694,6 @@ fn refresh_remote_source() -> io::Result<MarketplaceSource> {
             repository, tree.sha, file.path
         ))?;
         validate_config(&content)?;
-        if let Some(expected) = expected_checksums.get(&file.path) {
-            let actual = checksum(&content);
-            if &actual != expected {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("marketplace checksum mismatch for {}", file.path),
-                ));
-            }
-        }
         snapshot_checksums.insert(file.path.clone(), checksum(&content));
         let destination = temporary_root.join(&file.path);
         if let Some(parent) = destination.parent() {
@@ -755,6 +714,26 @@ fn refresh_remote_source() -> io::Result<MarketplaceSource> {
     };
     write_cache_metadata(&metadata)?;
     source_from_cache_metadata(metadata)
+}
+
+fn load_remote_tree(repository: &str) -> io::Result<GitTreeResponse> {
+    let url = format!("https://api.github.com/repos/{repository}/git/trees/main?recursive=1");
+    let response = curl_get(&url)?;
+    serde_json::from_slice::<GitTreeResponse>(&response).map_err(invalid_data)
+}
+
+fn marketplace_files_from_tree(tree: Vec<GitTreeEntry>) -> Vec<MarketplaceFile> {
+    let mut files = tree
+        .into_iter()
+        .filter(|entry| {
+            entry.kind == "blob"
+                && entry.path.ends_with(".json")
+                && entry.path != "marketplace-index.json"
+        })
+        .map(|entry| MarketplaceFile { path: entry.path })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files
 }
 
 fn load_cached_source() -> io::Result<MarketplaceSource> {
@@ -1148,9 +1127,10 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::{
-        checksum, group_files_by_category, is_exact_file_match, plan_update_action, select_files,
-        select_manifest_entries, short_revision, validate_marketplace_path, InstalledEntry,
-        MarketplaceFile, MarketplaceManifest, UpdateAction,
+        checksum, group_files_by_category, is_exact_file_match, marketplace_files_from_tree,
+        plan_update_action, select_files, select_manifest_entries, short_revision,
+        validate_marketplace_path, GitTreeEntry, InstalledEntry, MarketplaceFile,
+        MarketplaceManifest, UpdateAction,
     };
     use std::collections::BTreeMap;
 
@@ -1200,6 +1180,30 @@ mod tests {
         assert!(validate_marketplace_path("notion/search.json").is_ok());
         assert!(validate_marketplace_path("../outside.json").is_err());
         assert!(validate_marketplace_path("/absolute.json").is_err());
+    }
+
+    #[test]
+    fn builds_catalog_from_config_files_only() {
+        let files = marketplace_files_from_tree(vec![
+            GitTreeEntry {
+                path: "notion/search.json".to_string(),
+                kind: "blob".to_string(),
+            },
+            GitTreeEntry {
+                path: "marketplace-index.json".to_string(),
+                kind: "blob".to_string(),
+            },
+            GitTreeEntry {
+                path: "README.md".to_string(),
+                kind: "blob".to_string(),
+            },
+            GitTreeEntry {
+                path: "notion".to_string(),
+                kind: "tree".to_string(),
+            },
+        ]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "notion/search.json");
     }
 
     #[test]

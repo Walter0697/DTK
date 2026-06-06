@@ -394,12 +394,11 @@ current, locally modified, or missing. `update --dry-run` previews remote change
 `update` refreshes unchanged local configs and skips locally modified configs. `uninstall` only
 removes manifest-tracked configs and also preserves locally modified files unless `--force` is used.
 
-Marketplace browsing and installs use a cached, validated repository snapshot. The first online
-marketplace command creates the cache automatically; use `dtk marketplace refresh` to fetch a newer
-snapshot. Add `--offline` to `list`, `search`, `info`, `install`, or `update` to require cached
-content and prevent network access. When the repository publishes `marketplace-index.json`, refresh
-also verifies every downloaded config checksum. Override the cache location with
-`DTK_MARKETPLACE_CACHE_DIR`.
+Online `dtk marketplace list` reads the current repository tree from GitHub so newly added configs
+appear immediately. Other marketplace commands use a cached, validated repository snapshot and
+create it automatically when needed; use `dtk marketplace refresh` to fetch a newer snapshot. Add
+`--offline` to `list`, `search`, `info`, `install`, or `update` to require cached content and prevent
+network access. Override the cache location with `DTK_MARKETPLACE_CACHE_DIR`.
 
 ### Gain
 
