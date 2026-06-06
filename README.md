@@ -361,6 +361,7 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk hook add`
 - `dtk marketplace list [category]`
 - `dtk marketplace search <query>`
+- `dtk marketplace refresh`
 - `dtk marketplace installed`
 - `dtk marketplace info <category|config>`
 - `dtk marketplace install <category|config> [--force]`
@@ -375,6 +376,7 @@ DTK can browse and install reusable configs from the public
 
 ```bash
 dtk marketplace list
+dtk marketplace refresh
 dtk marketplace list notion
 dtk marketplace search notion
 dtk marketplace info notion/pat/notion_search_pat
@@ -391,6 +393,13 @@ revision and a checksum for each installed config. `installed` reports whether t
 current, locally modified, or missing. `update --dry-run` previews remote changes without writing.
 `update` refreshes unchanged local configs and skips locally modified configs. `uninstall` only
 removes manifest-tracked configs and also preserves locally modified files unless `--force` is used.
+
+Marketplace browsing and installs use a cached, validated repository snapshot. The first online
+marketplace command creates the cache automatically; use `dtk marketplace refresh` to fetch a newer
+snapshot. Add `--offline` to `list`, `search`, `info`, `install`, or `update` to require cached
+content and prevent network access. When the repository publishes `marketplace-index.json`, refresh
+also verifies every downloaded config checksum. Override the cache location with
+`DTK_MARKETPLACE_CACHE_DIR`.
 
 ### Gain
 

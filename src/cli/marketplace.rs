@@ -4,11 +4,12 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const DEFAULT_MARKETPLACE_REPO: &str = "Walter0697/dtk-marketplace";
 const MARKETPLACE_MANIFEST_VERSION: u32 = 1;
+const MARKETPLACE_CACHE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 struct MarketplaceFile {
@@ -26,6 +27,27 @@ struct GitTreeEntry {
     path: String,
     #[serde(rename = "type")]
     kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketplaceIndex {
+    schema_version: u32,
+    configs: Vec<MarketplaceIndexEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketplaceIndexEntry {
+    path: String,
+    checksum: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct MarketplaceCacheMetadata {
+    version: u32,
+    repository: String,
+    revision: String,
+    files: Vec<String>,
+    checksums: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -62,6 +84,7 @@ struct MarketplaceSource {
     revision: String,
     files: Vec<MarketplaceFile>,
     local_root: Option<PathBuf>,
+    checksums: BTreeMap<String, String>,
 }
 
 pub(super) fn run_marketplace_command(args: Vec<String>) -> ExitCode {
@@ -70,16 +93,27 @@ pub(super) fn run_marketplace_command(args: Vec<String>) -> ExitCode {
         print_usage();
         return ExitCode::from(2);
     };
-    let remaining = args.collect::<Vec<_>>();
+    let mut offline = false;
+    let remaining = args
+        .filter(|arg| {
+            if arg == "--offline" {
+                offline = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
 
     match subcommand.as_str() {
-        "list" | "ls" => run_list(remaining),
-        "search" => run_search(remaining),
+        "refresh" => run_refresh(remaining, offline),
+        "list" | "ls" => run_list(remaining, offline),
+        "search" => run_search(remaining, offline),
         "installed" => run_installed(remaining),
-        "info" => run_info(remaining),
-        "install" | "add" => run_install(remaining),
+        "info" => run_info(remaining, offline),
+        "install" | "add" => run_install(remaining, offline),
         "uninstall" | "remove" => run_uninstall(remaining),
-        "update" => run_update(remaining),
+        "update" => run_update(remaining, offline),
         "help" | "--help" | "-h" => {
             print_usage();
             ExitCode::from(0)
@@ -89,6 +123,34 @@ pub(super) fn run_marketplace_command(args: Vec<String>) -> ExitCode {
             print_usage();
             ExitCode::from(2)
         }
+    }
+}
+
+fn run_refresh(args: Vec<String>, offline: bool) -> ExitCode {
+    if offline {
+        eprintln!("marketplace refresh cannot run with --offline");
+        return ExitCode::from(2);
+    }
+    if !args.is_empty() {
+        eprintln!("unexpected extra arguments");
+        print_usage();
+        return ExitCode::from(2);
+    }
+    if std::env::var("DTK_MARKETPLACE_PATH").is_ok() {
+        eprintln!("marketplace refresh is unavailable when DTK_MARKETPLACE_PATH is set");
+        return ExitCode::from(2);
+    }
+    match refresh_remote_source() {
+        Ok(source) => {
+            println!(
+                "refreshed {} configs from {} at {}",
+                source.files.len(),
+                source.repository,
+                short_revision(&source.revision)
+            );
+            ExitCode::from(0)
+        }
+        Err(err) => fail("refresh marketplace cache", err),
     }
 }
 
@@ -118,13 +180,13 @@ fn run_installed(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
-fn run_info(args: Vec<String>) -> ExitCode {
+fn run_info(args: Vec<String>, offline: bool) -> ExitCode {
     if args.len() != 1 {
         eprintln!("marketplace info requires one category or config");
         print_usage();
         return ExitCode::from(2);
     }
-    let source = match load_source() {
+    let source = match load_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -228,14 +290,14 @@ fn run_info(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
-fn run_list(args: Vec<String>) -> ExitCode {
+fn run_list(args: Vec<String>, offline: bool) -> ExitCode {
     if args.len() > 1 {
         eprintln!("marketplace list accepts at most one category");
         print_usage();
         return ExitCode::from(2);
     }
 
-    let source = match load_source() {
+    let source = match load_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -261,14 +323,14 @@ fn run_list(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
-fn run_search(args: Vec<String>) -> ExitCode {
+fn run_search(args: Vec<String>, offline: bool) -> ExitCode {
     if args.len() != 1 {
         eprintln!("marketplace search requires one query");
         print_usage();
         return ExitCode::from(2);
     }
     let query = args[0].to_ascii_lowercase();
-    let source = match load_source() {
+    let source = match load_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -297,7 +359,7 @@ fn run_search(args: Vec<String>) -> ExitCode {
     ExitCode::from(0)
 }
 
-fn run_install(args: Vec<String>) -> ExitCode {
+fn run_install(args: Vec<String>, offline: bool) -> ExitCode {
     let options = parse_options(args);
     if options.dry_run {
         eprintln!("--dry-run is only supported by marketplace update");
@@ -310,7 +372,7 @@ fn run_install(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let source = match load_source() {
+    let source = match load_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -433,14 +495,14 @@ fn run_uninstall(args: Vec<String>) -> ExitCode {
     ExitCode::from(if conflicts > 0 { 1 } else { 0 })
 }
 
-fn run_update(args: Vec<String>) -> ExitCode {
+fn run_update(args: Vec<String>, offline: bool) -> ExitCode {
     let options = parse_options(args);
     if !options.positionals.is_empty() {
         eprintln!("unexpected extra arguments");
         print_usage();
         return ExitCode::from(2);
     }
-    let source = match load_source() {
+    let source = match load_source(offline) {
         Ok(source) => source,
         Err(err) => return fail("load marketplace", err),
     };
@@ -557,7 +619,16 @@ impl LocalStatus {
 impl MarketplaceSource {
     fn read_file(&self, path: &str) -> io::Result<Vec<u8>> {
         if let Some(root) = &self.local_root {
-            return fs::read(root.join(path));
+            let content = fs::read(root.join(path))?;
+            if let Some(expected) = self.checksums.get(path) {
+                if checksum(&content) != *expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("cached marketplace checksum mismatch for {path}"),
+                    ));
+                }
+            }
+            return Ok(content);
         }
         let url = format!(
             "https://raw.githubusercontent.com/{}/{}/{}",
@@ -567,7 +638,7 @@ impl MarketplaceSource {
     }
 }
 
-fn load_source() -> io::Result<MarketplaceSource> {
+fn load_source(offline: bool) -> io::Result<MarketplaceSource> {
     if let Ok(path) = std::env::var("DTK_MARKETPLACE_PATH") {
         let root = PathBuf::from(path);
         let mut paths = Vec::new();
@@ -581,27 +652,193 @@ fn load_source() -> io::Result<MarketplaceSource> {
                 .map(|path| MarketplaceFile { path })
                 .collect(),
             local_root: Some(root),
+            checksums: BTreeMap::new(),
         });
     }
 
-    let repository =
-        std::env::var("DTK_MARKETPLACE_REPO").unwrap_or_else(|_| DEFAULT_MARKETPLACE_REPO.into());
+    match load_cached_source() {
+        Ok(source) => Ok(source),
+        Err(err) if err.kind() == io::ErrorKind::NotFound && !offline => refresh_remote_source(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "marketplace cache is unavailable; run `dtk marketplace refresh` while online",
+        )),
+        Err(err) => Err(err),
+    }
+}
+
+fn refresh_remote_source() -> io::Result<MarketplaceSource> {
+    let repository = configured_repository();
     let url = format!("https://api.github.com/repos/{repository}/git/trees/main?recursive=1");
     let response = curl_get(&url)?;
     let tree = serde_json::from_slice::<GitTreeResponse>(&response).map_err(invalid_data)?;
     let mut files = tree
         .tree
         .into_iter()
-        .filter(|entry| entry.kind == "blob" && entry.path.ends_with(".json"))
+        .filter(|entry| {
+            entry.kind == "blob"
+                && entry.path.ends_with(".json")
+                && entry.path != "marketplace-index.json"
+        })
         .map(|entry| MarketplaceFile { path: entry.path })
         .collect::<Vec<_>>();
+    let mut expected_checksums = BTreeMap::new();
+    let index_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/marketplace-index.json",
+        repository, tree.sha
+    );
+    if let Ok(content) = curl_get(&index_url) {
+        let index = serde_json::from_slice::<MarketplaceIndex>(&content).map_err(invalid_data)?;
+        if index.schema_version != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "marketplace index schema version is unsupported",
+            ));
+        }
+        files.clear();
+        for entry in index.configs {
+            if expected_checksums
+                .insert(entry.path.clone(), entry.checksum)
+                .is_some()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("duplicate marketplace index path: {}", entry.path),
+                ));
+            }
+            files.push(MarketplaceFile { path: entry.path });
+        }
+    }
     files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(MarketplaceSource {
+    let snapshot_root = marketplace_cache_dir().join("snapshots").join(&tree.sha);
+    let temporary_root = marketplace_cache_dir()
+        .join("snapshots")
+        .join(format!("{}.tmp", tree.sha));
+    if temporary_root.exists() {
+        fs::remove_dir_all(&temporary_root)?;
+    }
+    fs::create_dir_all(&temporary_root)?;
+    let mut snapshot_checksums = BTreeMap::new();
+    for file in &files {
+        validate_marketplace_path(&file.path)?;
+        let content = curl_get(&format!(
+            "https://raw.githubusercontent.com/{}/{}/{}",
+            repository, tree.sha, file.path
+        ))?;
+        validate_config(&content)?;
+        if let Some(expected) = expected_checksums.get(&file.path) {
+            let actual = checksum(&content);
+            if &actual != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("marketplace checksum mismatch for {}", file.path),
+                ));
+            }
+        }
+        snapshot_checksums.insert(file.path.clone(), checksum(&content));
+        let destination = temporary_root.join(&file.path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(destination, content)?;
+    }
+    if snapshot_root.exists() {
+        fs::remove_dir_all(&snapshot_root)?;
+    }
+    fs::rename(temporary_root, &snapshot_root)?;
+    let metadata = MarketplaceCacheMetadata {
+        version: MARKETPLACE_CACHE_VERSION,
         repository,
         revision: tree.sha,
-        files,
-        local_root: None,
+        files: files.iter().map(|file| file.path.clone()).collect(),
+        checksums: snapshot_checksums,
+    };
+    write_cache_metadata(&metadata)?;
+    source_from_cache_metadata(metadata)
+}
+
+fn load_cached_source() -> io::Result<MarketplaceSource> {
+    let content = fs::read(marketplace_cache_dir().join("current.json"))?;
+    let metadata =
+        serde_json::from_slice::<MarketplaceCacheMetadata>(&content).map_err(invalid_data)?;
+    if metadata.version != MARKETPLACE_CACHE_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "marketplace cache version is unsupported; run `dtk marketplace refresh`",
+        ));
+    }
+    if metadata.repository != configured_repository() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "marketplace cache belongs to a different repository",
+        ));
+    }
+    source_from_cache_metadata(metadata)
+}
+
+fn source_from_cache_metadata(metadata: MarketplaceCacheMetadata) -> io::Result<MarketplaceSource> {
+    for path in &metadata.files {
+        validate_marketplace_path(path)?;
+    }
+    let root = marketplace_cache_dir()
+        .join("snapshots")
+        .join(&metadata.revision);
+    if !root.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "marketplace cache snapshot is missing",
+        ));
+    }
+    Ok(MarketplaceSource {
+        repository: metadata.repository,
+        revision: metadata.revision,
+        files: metadata
+            .files
+            .into_iter()
+            .map(|path| MarketplaceFile { path })
+            .collect(),
+        local_root: Some(root),
+        checksums: metadata.checksums,
     })
+}
+
+fn validate_marketplace_path(path: &str) -> io::Result<()> {
+    if path.is_empty()
+        || Path::new(path)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsafe marketplace path: {path}"),
+        ));
+    }
+    Ok(())
+}
+
+fn write_cache_metadata(metadata: &MarketplaceCacheMetadata) -> io::Result<()> {
+    let cache_dir = marketplace_cache_dir();
+    fs::create_dir_all(&cache_dir)?;
+    let path = cache_dir.join("current.json");
+    let temporary = cache_dir.join("current.json.tmp");
+    let mut content = serde_json::to_vec_pretty(metadata).map_err(invalid_data)?;
+    content.push(b'\n');
+    fs::write(&temporary, content)?;
+    fs::rename(temporary, path)
+}
+
+fn marketplace_cache_dir() -> PathBuf {
+    std::env::var("DTK_MARKETPLACE_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            default_config_dir()
+                .join("marketplace-cache")
+                .join("default")
+        })
+}
+
+fn configured_repository() -> String {
+    std::env::var("DTK_MARKETPLACE_REPO").unwrap_or_else(|_| DEFAULT_MARKETPLACE_REPO.into())
 }
 
 fn collect_json_files(root: &Path, current: &Path, output: &mut Vec<String>) -> io::Result<()> {
@@ -609,7 +846,9 @@ fn collect_json_files(root: &Path, current: &Path, output: &mut Vec<String>) -> 
         let path = entry?.path();
         if path.is_dir() {
             collect_json_files(root, &path, output)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+            && path.file_name().and_then(|name| name.to_str()) != Some("marketplace-index.json")
+        {
             let relative = path.strip_prefix(root).map_err(invalid_data)?;
             output.push(relative.to_string_lossy().replace('\\', "/"));
         }
@@ -893,22 +1132,25 @@ fn fail(action: &str, err: impl std::fmt::Display) -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("usage: dtk marketplace <list|search|installed|info|install|uninstall|update> ...");
-    eprintln!("  dtk marketplace list [category]");
-    eprintln!("  dtk marketplace search <query>");
+    eprintln!(
+        "usage: dtk marketplace <refresh|list|search|installed|info|install|uninstall|update> ..."
+    );
+    eprintln!("  dtk marketplace refresh");
+    eprintln!("  dtk marketplace list [category] [--offline]");
+    eprintln!("  dtk marketplace search <query> [--offline]");
     eprintln!("  dtk marketplace installed");
-    eprintln!("  dtk marketplace info <category|config>");
-    eprintln!("  dtk marketplace install <category|config> [--force]");
+    eprintln!("  dtk marketplace info <category|config> [--offline]");
+    eprintln!("  dtk marketplace install <category|config> [--force] [--offline]");
     eprintln!("  dtk marketplace uninstall <category|config> [--force]");
-    eprintln!("  dtk marketplace update [--dry-run] [--force]");
+    eprintln!("  dtk marketplace update [--dry-run] [--force] [--offline]");
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         checksum, group_files_by_category, is_exact_file_match, plan_update_action, select_files,
-        select_manifest_entries, short_revision, InstalledEntry, MarketplaceFile,
-        MarketplaceManifest, UpdateAction,
+        select_manifest_entries, short_revision, validate_marketplace_path, InstalledEntry,
+        MarketplaceFile, MarketplaceManifest, UpdateAction,
     };
     use std::collections::BTreeMap;
 
@@ -951,6 +1193,13 @@ mod tests {
             checksum(b"dtk"),
             "48f11ae0b92d42d5bfe89702270e475fa1bec9b7845c800064514a1ce7d06179"
         );
+    }
+
+    #[test]
+    fn rejects_unsafe_marketplace_paths() {
+        assert!(validate_marketplace_path("notion/search.json").is_ok());
+        assert!(validate_marketplace_path("../outside.json").is_err());
+        assert!(validate_marketplace_path("/absolute.json").is_err());
     }
 
     #[test]
