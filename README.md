@@ -361,8 +361,12 @@ In that flow, DTK checks for a matching config first. If DTK has no config or sc
 - `dtk hook add`
 - `dtk marketplace list [category]`
 - `dtk marketplace search <query>`
+- `dtk marketplace refresh`
+- `dtk marketplace installed`
+- `dtk marketplace info <category|config>`
 - `dtk marketplace install <category|config> [--force]`
-- `dtk marketplace update [--force]`
+- `dtk marketplace uninstall <category|config> [--force]`
+- `dtk marketplace update [--dry-run] [--force]`
 - `dtk version`
 
 ### Marketplace
@@ -372,17 +376,29 @@ DTK can browse and install reusable configs from the public
 
 ```bash
 dtk marketplace list
+dtk marketplace refresh
 dtk marketplace list notion
 dtk marketplace search notion
+dtk marketplace info notion/pat/notion_search_pat
 dtk marketplace install notion
 dtk marketplace install notion/pat/notion_search_pat
+dtk marketplace installed
+dtk marketplace update --dry-run
 dtk marketplace update
+dtk marketplace uninstall notion/pat/notion_search_pat
 ```
 
 Marketplace installs are tracked in `~/.config/dtk/marketplace.json` using the marketplace Git
-revision and a checksum for each installed config. `update` refreshes unchanged local configs,
-skips locally modified configs, and reports configs removed upstream. Use `--force` only when you
-intend to overwrite local changes.
+revision and a checksum for each installed config. `installed` reports whether tracked files are
+current, locally modified, or missing. `update --dry-run` previews remote changes without writing.
+`update` refreshes unchanged local configs and skips locally modified configs. `uninstall` only
+removes manifest-tracked configs and also preserves locally modified files unless `--force` is used.
+
+Online `dtk marketplace list` reads the current repository tree from GitHub so newly added configs
+appear immediately. Other marketplace commands use a cached, validated repository snapshot and
+create it automatically when needed; use `dtk marketplace refresh` to fetch a newer snapshot. Add
+`--offline` to `list`, `search`, `info`, `install`, or `update` to require cached content and prevent
+network access. Override the cache location with `DTK_MARKETPLACE_CACHE_DIR`.
 
 ### Gain
 
@@ -429,12 +445,6 @@ While a session is active, DTK writes the session ticket into each metrics row. 
 ## Contributing
 
 Branch protection and PR-only merges are configured on GitHub, not in the repo itself. See [CONTRIBUTING.md](CONTRIBUTING.md) for the expected workflow.
-
-## Roadmap
-
-1. Add PII-aware filtering.
-2. Improve TUI and GUI management.
-3. Add more release and distribution methods.
 
 ## License
 

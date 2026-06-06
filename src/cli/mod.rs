@@ -148,10 +148,14 @@ fn print_usage() {
     eprintln!("  dtk config allow <add|remove> <config> <field>");
     eprintln!("  dtk config pii <add|remove> <config> <path> [options]");
     eprintln!("  dtk config delete <config>");
-    eprintln!("  dtk marketplace list [category]");
-    eprintln!("  dtk marketplace search <query>");
-    eprintln!("  dtk marketplace install <category|config> [--force]");
-    eprintln!("  dtk marketplace update [--force]");
+    eprintln!("  dtk marketplace refresh");
+    eprintln!("  dtk marketplace list [category] [--offline]");
+    eprintln!("  dtk marketplace search <query> [--offline]");
+    eprintln!("  dtk marketplace installed");
+    eprintln!("  dtk marketplace info <category|config> [--offline]");
+    eprintln!("  dtk marketplace install <category|config> [--force] [--offline]");
+    eprintln!("  dtk marketplace uninstall <category|config> [--force]");
+    eprintln!("  dtk marketplace update [--dry-run] [--force] [--offline]");
     eprintln!("  dtk cache <list|show> [ref_id]");
     eprintln!("  dtk session <start|end> [--ticket-id ID|--ticketId ID]");
     eprintln!("  dtk gain [--limit N]");
