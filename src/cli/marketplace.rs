@@ -1,4 +1,4 @@
-use dtk::{default_config_dir, FilterConfig};
+use dtk::{add_or_update_hook_rule, default_config_dir, remove_hook_rules_for_config, FilterConfig, HookRule};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,6 +50,26 @@ struct MarketplaceManifest {
 struct InstalledEntry {
     source_path: String,
     checksum: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MarketplaceHookRule {
+    #[serde(default)]
+    command_prefix: Option<String>,
+    #[serde(default)]
+    command_contains: Vec<String>,
+    #[serde(default)]
+    retention_days: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MarketplaceFileMeta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    hook_rule: Option<MarketplaceHookRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,7 +402,7 @@ fn run_install(args: Vec<String>, offline: bool) -> ExitCode {
         return fail("create config directory", err);
     }
 
-    let mut installed = 0;
+    let mut to_install: Vec<(String, String, PathBuf, Vec<u8>)> = Vec::new();
     let mut skipped = 0;
     for file in selected {
         let content = match source.read_file(&file.path) {
@@ -409,17 +429,31 @@ fn run_install(args: Vec<String>, offline: bool) -> ExitCode {
             skipped += 1;
             continue;
         }
-        if let Err(err) = fs::write(&destination, &content) {
+        to_install.push((file.path.clone(), filename.to_string(), destination, content));
+    }
+
+    // Register more-specific hook rules first so they are matched before broader rules.
+    to_install.sort_by(|(_, _, _, a), (_, _, _, b)| {
+        hook_rule_specificity(&parse_file_meta(b).hook_rule)
+            .cmp(&hook_rule_specificity(&parse_file_meta(a).hook_rule))
+    });
+
+    let hooks_path = default_config_dir().join("hooks.json");
+    let mut installed = 0;
+    for (source_path, filename, destination, content) in &to_install {
+        if let Err(err) = fs::write(destination, content) {
             return fail(&format!("write {}", destination.display()), err);
         }
         manifest.entries.insert(
-            filename.to_string(),
+            filename.clone(),
             InstalledEntry {
-                source_path: file.path.clone(),
-                checksum: checksum(&content),
+                source_path: source_path.clone(),
+                checksum: checksum(content),
             },
         );
-        println!("installed: {} -> {}", file.path, destination.display());
+        let meta = parse_file_meta(content);
+        register_marketplace_hook_rule(&hooks_path, &meta, destination, filename);
+        println!("installed: {} -> {}", source_path, destination.display());
         installed += 1;
     }
 
@@ -467,6 +501,8 @@ fn run_uninstall(args: Vec<String>) -> ExitCode {
             conflicts += 1;
             continue;
         }
+        let hooks_path = default_config_dir().join("hooks.json");
+        let _ = remove_hook_rules_for_config(&hooks_path, &destination.to_string_lossy());
         if status != LocalStatus::Missing {
             if let Err(err) = fs::remove_file(&destination) {
                 return fail(&format!("remove {}", destination.display()), err);
@@ -568,6 +604,9 @@ fn run_update(args: Vec<String>, offline: bool) -> ExitCode {
                         return fail(&format!("write {}", destination.display()), err);
                     }
                     entry.checksum = checksum(&remote);
+                    let meta = parse_file_meta(&remote);
+                    let hooks_path = default_config_dir().join("hooks.json");
+                    register_marketplace_hook_rule(&hooks_path, &meta, &destination, filename);
                     println!("updated: {}", destination.display());
                 }
                 updated += 1;
@@ -1012,6 +1051,53 @@ fn trim_json_suffix(path: &str) -> &str {
 
 fn short_revision(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
+}
+
+fn parse_file_meta(content: &[u8]) -> MarketplaceFileMeta {
+    serde_json::from_slice(content).unwrap_or_default()
+}
+
+fn hook_rule_specificity(rule: &Option<MarketplaceHookRule>) -> (usize, usize) {
+    match rule {
+        None => (0, 0),
+        Some(rule) => {
+            let count = rule.command_contains.len();
+            let max_len = rule.command_contains.iter().map(|s| s.len()).max().unwrap_or(0);
+            (count, max_len)
+        }
+    }
+}
+
+fn register_marketplace_hook_rule(
+    hooks_path: &Path,
+    meta: &MarketplaceFileMeta,
+    config_path: &Path,
+    filename: &str,
+) {
+    let Some(hook_rule) = &meta.hook_rule else {
+        return;
+    };
+    let name = meta
+        .name
+        .clone()
+        .or_else(|| meta.id.clone())
+        .unwrap_or_else(|| {
+            Path::new(filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(filename)
+                .to_string()
+        });
+    let rule = HookRule {
+        name: Some(name),
+        config: Some(config_path.to_string_lossy().to_string()),
+        command_prefix: hook_rule.command_prefix.clone(),
+        command_contains: hook_rule.command_contains.clone(),
+        retention_days: hook_rule.retention_days,
+    };
+    if let Err(err) = add_or_update_hook_rule(hooks_path, rule) {
+        eprintln!("warning: failed to register hook rule for {filename}: {err}");
+    }
 }
 
 fn validate_config(content: &[u8]) -> io::Result<()> {

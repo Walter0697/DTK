@@ -5,10 +5,11 @@ mod install;
 mod marketplace;
 mod session;
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-use dtk::{end_session, runtime_store_dir, start_session, AgentTarget};
+use dtk::{claude_dir, end_session, runtime_store_dir, start_session, AgentTarget};
 
 pub fn run() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -232,6 +233,9 @@ fn detect_agent_target_from_artifacts() -> Option<(AgentTarget, &'static str)> {
             "artifact: .config/opencode/plugins/dtk.ts",
         ));
     }
+    if claude_artifact_exists() {
+        return Some((AgentTarget::Claude, "artifact: Claude DTK integration"));
+    }
     if hermes_artifact_exists() {
         return Some((AgentTarget::Hermes, "artifact: Hermes plugin/config"));
     }
@@ -248,6 +252,28 @@ fn path_exists(segments: &[&str]) -> bool {
         path.push(segment);
     }
     path.exists()
+}
+
+fn claude_artifact_exists() -> bool {
+    let base = claude_dir();
+    if base.join("DTK.md").exists()
+        || base.join("hooks").join("dtk-rewrite.sh").exists()
+        || base.join("skills").join("dtk").join("SKILL.md").exists()
+    {
+        return true;
+    }
+    let claude_md = base.join("CLAUDE.md");
+    if let Ok(content) = fs::read_to_string(claude_md) {
+        if content.lines().any(|line| line.trim() == "@DTK.md") {
+            return true;
+        }
+    }
+    let settings = base.join("settings.json");
+    if let Ok(content) = fs::read_to_string(settings) {
+        return content.contains("dtk_hook_route --provider claude")
+            || content.contains("dtk-rewrite.sh");
+    }
+    false
 }
 
 fn hermes_artifact_exists() -> bool {
@@ -564,6 +590,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let vars = [
             "DTK_AGENT",
+            "DTK_CLAUDE_DIR",
             "HERMES_HOME",
             "CLAUDECODE",
             "ANTHROPIC_API_KEY",
@@ -594,6 +621,49 @@ mod tests {
         std::env::set_current_dir(&original_dir).expect("restore cwd");
         let _ = std::fs::remove_dir_all(&temp);
 
+        for (var, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+
+    #[test]
+    fn detect_agent_target_recognizes_claude_install_artifacts() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let vars = [
+            "DTK_AGENT",
+            "DTK_CLAUDE_DIR",
+            "HERMES_HOME",
+            "CLAUDECODE",
+            "ANTHROPIC_API_KEY",
+            "CURSOR_TRACE_ID",
+            "CURSOR_SESSION_ID",
+            "COPILOT_AGENT",
+            "GITHUB_COPILOT",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ];
+        let saved: Vec<(String, Option<std::ffi::OsString>)> = vars
+            .iter()
+            .map(|var| ((*var).to_string(), std::env::var_os(var)))
+            .collect();
+        for (var, _) in &saved {
+            std::env::remove_var(var);
+        }
+
+        let temp = make_temp_dir();
+        std::fs::create_dir_all(temp.join("skills/dtk")).expect("claude skill dir");
+        std::fs::write(temp.join("CLAUDE.md"), "@DTK.md\n").expect("claude md");
+        std::fs::write(temp.join("skills/dtk/SKILL.md"), "dtk skill").expect("claude skill");
+        std::env::set_var("DTK_CLAUDE_DIR", &temp);
+
+        let report = super::detect_agent_target_report().expect("report");
+        assert_eq!(report.0, dtk::AgentTarget::Claude);
+        assert_eq!(report.1, "artifact: Claude DTK integration");
+
+        let _ = std::fs::remove_dir_all(&temp);
         for (var, value) in saved {
             match value {
                 Some(value) => std::env::set_var(var, value),
