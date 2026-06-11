@@ -151,6 +151,12 @@ fn normalize_command_for_matching(command: &str) -> String {
             return rest.trim_start().to_string();
         }
     }
+    // Strip bare "dtk exec -- " so the hook can match and config-wrap the inner
+    // command. Only strip the no-config form; "dtk exec --config ..." is already
+    // routed and should pass through unchanged.
+    if let Some(rest) = trimmed.strip_prefix("dtk exec -- ") {
+        return rest.trim_start().to_string();
+    }
     trimmed.to_string()
 }
 
@@ -274,6 +280,22 @@ mod tests {
     fn recognizes_curl_commands() {
         assert!(super::is_curl_command("curl -sS https://example.com"));
         assert!(!super::is_curl_command("git status"));
+    }
+
+    #[test]
+    fn unwraps_bare_dtk_exec_prefix() {
+        assert_eq!(
+            normalize_command_for_matching(
+                "dtk exec -- curl -sS -H \"X-N8N-API-KEY: $N8N_API_TOKEN\" \"${N8N_BASE_URL%/}/api/v1/workflows\""
+            ),
+            "curl -sS -H \"X-N8N-API-KEY: $N8N_API_TOKEN\" \"${N8N_BASE_URL%/}/api/v1/workflows\""
+        );
+    }
+
+    #[test]
+    fn does_not_unwrap_dtk_exec_with_config() {
+        let cmd = "dtk exec --config /path/to/config.json -- curl -sS https://example.com";
+        assert_eq!(normalize_command_for_matching(cmd), cmd);
     }
 }
 
