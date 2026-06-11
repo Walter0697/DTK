@@ -10,7 +10,6 @@ The workflow is to run the live source, inspect the output, ask what fields are 
 Generated configs should be saved in the user config area, not in the repo.
 Default storage target: `~/.config/dtk/configs/` on Unix-like systems, or the platform equivalent.
 After generating the config, update the global hook rules file at `~/.config/dtk/hooks.json` with a matching rule that points to it.
-Prefer `dtk hook add` to register the rule instead of editing the file by hand.
 
 ## Suggested Prompt
 
@@ -51,7 +50,7 @@ Please inspect the response, identify the fields that are likely needed, ask me 
    - `allow`
    - optional `pii` rules when the user wants masking or synthetic replacement
    - store it under the global DTK config directory
-   - append or update a matching rule in `~/.config/dtk/hooks.json` via `dtk hook add`
+   - append or update a matching rule directly in `~/.config/dtk/hooks.json`
 8. Run `dtk exec --config ... -- <command>` and compare:
    - original payload shape
    - filtered payload shape
@@ -82,7 +81,7 @@ When updating an existing installed config after creation, prefer DTK-native con
 - Use `mask` with a default replacement of `[PII INFORMATION]` unless the user wants a different token.
 - Use `uuid` when the user wants deterministic synthetic identifiers or templated replacements.
 - Use `replace` when the user wants to rebuild a field from sibling fields, such as `email` from `firstName` and `lastName`.
-- Use the command prefix to match the stable command family, and use contains checks only when a specific flag must be required.
+- Use the command prefix to match the stable command family. For endpoints where the prefix contains a shell variable (such as `${N8N_BASE_URL%/}`), `command_contains` is required — include at least one path segment that uniquely identifies the endpoint (for example `"/api/v1/workflows"`).
 - Use `dtk retrieve` when you need to project specific fields back out of a stored payload.
 - Use nested indexes like `users[0].firstName` when you need a single array element from a nested array.
 - Use `_dtk.ref_id` from filtered output as the lookup key for `dtk retrieve`.
