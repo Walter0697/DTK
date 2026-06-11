@@ -1,4 +1,7 @@
-use dtk::{add_or_update_hook_rule, default_config_dir, remove_hook_rules_for_config, FilterConfig, HookRule};
+use dtk::{
+    add_or_update_hook_rule, default_config_dir, remove_hook_rules_for_config, FilterConfig,
+    HookRule,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -429,7 +432,12 @@ fn run_install(args: Vec<String>, offline: bool) -> ExitCode {
             skipped += 1;
             continue;
         }
-        to_install.push((file.path.clone(), filename.to_string(), destination, content));
+        to_install.push((
+            file.path.clone(),
+            filename.to_string(),
+            destination,
+            content,
+        ));
     }
 
     // Register more-specific hook rules first so they are matched before broader rules.
@@ -1062,7 +1070,12 @@ fn hook_rule_specificity(rule: &Option<MarketplaceHookRule>) -> (usize, usize) {
         None => (0, 0),
         Some(rule) => {
             let count = rule.command_contains.len();
-            let max_len = rule.command_contains.iter().map(|s| s.len()).max().unwrap_or(0);
+            let max_len = rule
+                .command_contains
+                .iter()
+                .map(|s| s.len())
+                .max()
+                .unwrap_or(0);
             (count, max_len)
         }
     }
