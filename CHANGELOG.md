@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/Walter0697/DTK/compare/v0.0.7...v0.1.0) - 2026-06-12
+
+### Added
+
+- add hook rule lifecycle to marketplace install/uninstall/update
+
+### Fixed
+
+- hook route now unwraps bare dtk exec -- before rule matching
+
+### Other
+
+- apply rustfmt to marketplace.rs
+
 ## [0.0.7](https://github.com/Walter0697/DTK/compare/v0.0.6...v0.0.7) - 2026-06-06
 
 ### Other
